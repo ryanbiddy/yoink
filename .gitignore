@@ -8,3 +8,5 @@ build/
 *.zip
 video.*
 Yoink/
+
+.claude/
