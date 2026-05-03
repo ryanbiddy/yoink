@@ -8,7 +8,7 @@ Endpoints:
     POST /extract           single-video, drops in Desktop\Yoink\
     POST /session/start
     POST /session/add       runs extraction into the session folder
-    POST /session/close     concatenates combined.md files into corpus.md
+    POST /session/close     concatenates per-video yoink.md files into corpus.md
     POST /session/cancel
     GET  /session/list
     GET  /session/active
@@ -21,10 +21,12 @@ import re
 import subprocess
 import sys
 import threading
+import urllib.request
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 # --- Import helpers from the existing CLI script ---------------------------
 HERE = Path(__file__).parent.resolve()
@@ -34,7 +36,7 @@ from yt_extract import parse_srt, slugify, fmt_time  # noqa: E402
 # --- Constants -------------------------------------------------------------
 HOST = "127.0.0.1"
 PORT = 5179
-VERSION = "1.1"
+VERSION = "1.0.0"
 ALLOWED_ORIGINS = {
     "https://www.youtube.com",
     "https://m.youtube.com",
@@ -69,29 +71,531 @@ _extract_lock = threading.Lock()
 # Serialize session.json mutations to keep the on-disk state consistent.
 _session_lock = threading.Lock()
 
+# Markers in yoink.md so the comments section can be replaced after the
+# background fetch finishes. HTML comments are invisible in rendered markdown.
+COMMENTS_START_MARK = "<!-- yoink:comments-start -->"
+COMMENTS_END_MARK = "<!-- yoink:comments-end -->"
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
+def format_count(n) -> str:
+    """13500 -> '13.5K', 1500000 -> '1.5M', 2_000_000_000 -> '2.0B'."""
+    if n is None:
+        return "—"
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "—"
+    if n < 0:
+        return str(n)
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+# Subscribers use the same compact format. Aliased so callers can read clearly.
+format_subscribers = format_count
+
+
+def format_duration(seconds) -> str:
+    """3725 -> '01:02:05', 245 -> '04:05'."""
+    if seconds is None:
+        return "—"
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        return "—"
+    if seconds < 0:
+        seconds = 0
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def _fmt_int(n) -> str:
+    """29142 -> '29,142'. Used for views/likes/comments header fields."""
+    if n is None:
+        return "—"
+    try:
+        return f"{int(n):,}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_iso_date(s) -> str:
+    """yt-dlp returns upload_date as 'YYYYMMDD'. Convert to 'YYYY-MM-DD'."""
+    if not s:
+        return "—"
+    s = str(s)
+    if len(s) == 8 and s.isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
+TOPICS_PATH = HERE / "topics.json"
+
+
+def _load_topics() -> dict:
+    """Read topics.json from project root. Returns a dict with a 'topics'
+    list of {name, keywords} and a 'fallback' string. On any error (missing
+    or malformed file) returns an empty topic list with a sane fallback so
+    classification just degrades to 'Uncategorized'.
+    """
+    if not TOPICS_PATH.exists():
+        log.warning("topics.json missing at %s — falling back to 'Uncategorized'",
+                    TOPICS_PATH)
+        return {"topics": [], "fallback": "Uncategorized"}
+    try:
+        return json.loads(TOPICS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("topics.json read failed: %s", e)
+        return {"topics": [], "fallback": "Uncategorized"}
+
+
+def _classify_topic(metadata: dict) -> str:
+    """Pick the best topic name for this video by counting keyword
+    substring matches across the title, description, tags, channel, and
+    uploader. Topic with the most matches wins; ties go to the topic
+    defined first in topics.json. Falls back when nothing matches.
+    """
+    haystack = " ".join([
+        metadata.get("title") or "",
+        metadata.get("description") or "",
+        " ".join(metadata.get("tags") or []),
+        metadata.get("channel") or "",
+        metadata.get("uploader") or "",
+    ]).lower()
+
+    cfg = _load_topics()
+    fallback = (cfg.get("fallback") or "Uncategorized").strip() or "Uncategorized"
+    best_name = fallback
+    best_score = 0
+
+    for t in cfg.get("topics", []):
+        name = (t.get("name") or "").strip()
+        kws = t.get("keywords") or []
+        if not name or not kws:
+            continue
+        score = sum(1 for kw in kws if kw and str(kw).lower() in haystack)
+        if score > best_score:
+            best_score = score
+            best_name = name
+
+    return best_name
+
+
+# Trim and normalize a topic name into a Windows-safe folder segment without
+# stripping the spaces — we want "Social Media Research" on disk, not the
+# slugified "Social_Media_Research".
+_FORBIDDEN_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _topic_folder_name(topic: str) -> str:
+    cleaned = _FORBIDDEN_PATH_CHARS.sub("", topic).strip().rstrip(".")
+    return cleaned or "Uncategorized"
+
+
+# ---------------------------------------------------------------------------
+# Metadata, thumbnail, channel context, comments
+# ---------------------------------------------------------------------------
+def _fetch_metadata(url: str) -> dict:
+    """Single yt-dlp call that returns the full metadata blob without
+    downloading the video. Used to derive the folder slug, fill the corpus
+    header, and seed the thumbnail URL.
+    """
+    raw = subprocess.check_output(
+        [*YTDLP_CMD, "--dump-single-json", "--no-download", url],
+        text=True, stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+        **SUBPROCESS_KW,
+    )
+    return json.loads(raw)
+
+
+def _download_thumbnail(metadata: dict, output_folder: Path) -> Path | None:
+    """Download highest-resolution thumbnail to <folder>/thumbnail.jpg.
+    Always re-encodes through ffmpeg so the output is jpg even if YouTube
+    served webp/png. Returns the jpg path on success, None on failure.
+    """
+    thumbs = metadata.get("thumbnails") or []
+    candidates = [t for t in thumbs if t.get("url")]
+    if candidates:
+        candidates.sort(
+            key=lambda t: (t.get("width") or 0) * (t.get("height") or 0),
+            reverse=True,
+        )
+        url = candidates[0]["url"]
+    else:
+        url = metadata.get("thumbnail")
+    if not url:
+        return None
+
+    raw_path = output_folder / "thumbnail.raw"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp, open(raw_path, "wb") as f:
+            f.write(resp.read())
+    except Exception as e:
+        log.warning("thumbnail download failed: %s", e)
+        return None
+
+    jpg_path = output_folder / "thumbnail.jpg"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y",
+             "-i", str(raw_path), str(jpg_path)],
+            check=True, stderr=subprocess.PIPE, **SUBPROCESS_KW,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", errors="ignore").strip()
+        log.warning("ffmpeg thumbnail convert failed: %s", stderr)
+        return None
+    finally:
+        raw_path.unlink(missing_ok=True)
+
+    return jpg_path if jpg_path.exists() else None
+
+
+def _fetch_channel_context(channel_url: str) -> dict:
+    """Best-effort fetch of channel description + last 5 video stubs.
+    Returns {'description': str, 'recent_videos': [{title, view_count,
+    upload_date}, ...]}. Empty dict-shape on failure.
+    """
+    empty = {"description": "", "recent_videos": []}
+    if not channel_url:
+        return empty
+
+    # Prefer the /videos tab so we get videos (not playlists/shorts/featured).
+    target = channel_url.rstrip("/")
+    if not target.endswith("/videos"):
+        target = target + "/videos"
+
+    try:
+        raw = subprocess.check_output(
+            [*YTDLP_CMD, "--dump-single-json", "--flat-playlist",
+             "--playlist-end", "5", target],
+            text=True, stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+            **SUBPROCESS_KW,
+        )
+    except Exception as e:
+        log.warning("channel context fetch failed: %s", e)
+        return empty
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.warning("channel context parse failed: %s", e)
+        return empty
+
+    description = (data.get("description") or "").strip()
+    entries = data.get("entries") or []
+    recent = []
+    for e in entries[:5]:
+        if not isinstance(e, dict):
+            continue
+        recent.append({
+            "title": e.get("title") or "",
+            "view_count": e.get("view_count"),
+            "upload_date": e.get("upload_date"),
+        })
+    return {"description": description, "recent_videos": recent}
+
+
+def _render_comments(comments: list[dict]) -> str:
+    """Render top comments as markdown. Each: bold author + meta, then
+    blockquoted body. Preserves line breaks within a comment.
+    """
+    out = []
+    for c in comments:
+        author = (c.get("author") or "Anonymous").strip() or "Anonymous"
+        text = (c.get("text") or "").strip()
+        likes = c.get("like_count") or 0
+        time_text = (c.get("time_text") or "").strip()
+        meta = f"{format_count(likes)} likes"
+        if time_text:
+            meta += f", {time_text}"
+        out.append(f"**{author}** ({meta})")
+        for ln in (text.splitlines() or [""]):
+            out.append(f"> {ln}" if ln else ">")
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _replace_comments_section(yoink_path: Path, body: str) -> None:
+    """Atomically rewrite the COMMENTS_START..COMMENTS_END block in yoink.md.
+    Safe to call from a background thread.
+    """
+    try:
+        text = yoink_path.read_text(encoding="utf-8")
+    except OSError as e:
+        log.warning("could not read yoink.md to update comments: %s", e)
+        return
+
+    pattern = re.compile(
+        re.escape(COMMENTS_START_MARK) + r".*?" + re.escape(COMMENTS_END_MARK),
+        re.DOTALL,
+    )
+    replacement = f"{COMMENTS_START_MARK}\n{body.rstrip()}\n{COMMENTS_END_MARK}"
+    new_text, n = pattern.subn(replacement, text, count=1)
+    if n == 0:
+        log.warning("comments markers not found in yoink.md; skipping update")
+        return
+
+    tmp = yoink_path.with_suffix(".md.tmp")
+    try:
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(yoink_path)
+    except OSError as e:
+        log.warning("could not write yoink.md to update comments: %s", e)
+
+
+def _comments_worker(url: str, output_folder: Path, yoink_path: Path,
+                     max_comments: int = 100, top_n: int = 50) -> None:
+    """Background-thread body. Fetches comments via yt-dlp, then rewrites
+    the comments section of yoink.md in place. Never raises — failures
+    just leave a 'disabled or unavailable' note.
+    """
+    try:
+        info_template = output_folder / "%(id)s_yoink_comments.%(ext)s"
+        subprocess.run(
+            [*YTDLP_CMD,
+             "--write-info-json",
+             "--write-comments",
+             "--skip-download",
+             "--extractor-args",
+             f"youtube:max_comments={max_comments},all,all,all",
+             "-o", str(info_template),
+             url],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            **SUBPROCESS_KW,
+        )
+        info_files = list(output_folder.glob("*_yoink_comments.info.json"))
+        if not info_files:
+            log.warning("comments info.json not found for %s", url)
+            _replace_comments_section(yoink_path,
+                "*Comments could not be retrieved.*")
+            return
+        info = json.loads(info_files[0].read_text(encoding="utf-8"))
+        raw_comments = info.get("comments") or []
+        if not raw_comments:
+            _replace_comments_section(yoink_path,
+                "*Comments are disabled on this video.*")
+            return
+        ranked = sorted(
+            raw_comments,
+            key=lambda c: c.get("like_count") or 0,
+            reverse=True,
+        )[:top_n]
+        _replace_comments_section(yoink_path, _render_comments(ranked))
+        log.info("comments appended to %s (%d of %d)",
+                 yoink_path, len(ranked), len(raw_comments))
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", errors="ignore").strip()
+        log.warning("comments yt-dlp failed: %s", stderr.splitlines()[-1] if stderr else e.returncode)
+        _replace_comments_section(yoink_path,
+            "*Comments are disabled on this video.*")
+    except Exception as e:
+        log.warning("comments worker crashed: %s", e)
+        _replace_comments_section(yoink_path,
+            "*Comments could not be retrieved.*")
+
+
+def _start_comments_thread(url: str, output_folder: Path,
+                           yoink_path: Path) -> threading.Thread:
+    t = threading.Thread(
+        target=_comments_worker,
+        args=(url, output_folder, yoink_path),
+        name=f"comments-{output_folder.name}",
+        daemon=True,
+    )
+    t.start()
+    return t
+
+
+# ---------------------------------------------------------------------------
+# yoink.md builder
+# ---------------------------------------------------------------------------
+def _build_yoink_md(metadata: dict, url: str, entries: list, shots: list,
+                    interval: int, channel_ctx: dict,
+                    yoinked_at: str, topic: str) -> str:
+    """Produce the v1 corpus markdown. Comments section is a placeholder
+    that the background worker rewrites once the fetch completes.
+    """
+    title = metadata.get("title") or "Untitled"
+    channel = metadata.get("channel") or metadata.get("uploader") or "—"
+    sub_count = format_subscribers(metadata.get("channel_follower_count"))
+    upload_date = _fmt_iso_date(metadata.get("upload_date"))
+    duration = format_duration(metadata.get("duration"))
+    views = _fmt_int(metadata.get("view_count"))
+    likes = _fmt_int(metadata.get("like_count"))
+    description = (metadata.get("description") or "").strip()
+    tags = metadata.get("tags") or []
+    chapters = metadata.get("chapters") or []
+
+    parts: list[str] = []
+    parts.append(f"# {title}")
+    parts.append("")
+    parts.append(f"**Channel:** {channel} ({sub_count} subscribers)")
+    parts.append(
+        f"**Uploaded:** {upload_date} | **Duration:** {duration} | "
+        f"**Views:** {views} | **Likes:** {likes}"
+    )
+    parts.append(f"**URL:** {url}")
+    parts.append(f"**Yoinked:** {yoinked_at}")
+    parts.append(f"**Topic:** {topic}")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    # Thumbnail
+    parts.append("## Thumbnail")
+    parts.append("")
+    parts.append("![Thumbnail](thumbnail.jpg)")
+    parts.append("")
+
+    # Description
+    parts.append("## Description")
+    parts.append("")
+    parts.append(description if description else "*No description.*")
+    parts.append("")
+
+    # Tags
+    parts.append("## Tags")
+    parts.append("")
+    parts.append(", ".join(tags) if tags else "No tags")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    # Transcript
+    parts.append("## Transcript")
+    parts.append("")
+    if not entries:
+        parts.append("*No captions available for this video.*")
+        parts.append("")
+    else:
+        if chapters:
+            # Group entries by chapter ranges. Chapters have start_time/end_time.
+            for ch in chapters:
+                ch_start = ch.get("start_time") or 0
+                ch_end = ch.get("end_time")
+                ch_title = ch.get("title") or "Chapter"
+                parts.append(f"### Chapter: {ch_title} ({fmt_time(int(ch_start))})")
+                parts.append("")
+                for s, _e, t in entries:
+                    if s < ch_start:
+                        continue
+                    if ch_end is not None and s >= ch_end:
+                        continue
+                    parts.append(f"[{fmt_time(int(s))}] {t}")
+                parts.append("")
+        else:
+            for s, _e, t in entries:
+                parts.append(f"[{fmt_time(int(s))}] {t}")
+            parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    # Screenshots
+    parts.append("## Screenshots")
+    parts.append("")
+    for i, shot in enumerate(shots):
+        start = i * interval
+        ts = fmt_time(start)
+        parts.append(f"### [{ts}]")
+        parts.append("")
+        parts.append(f"![Screenshot at {ts}](screenshots/{shot.name})")
+        parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    # Top Comments — placeholder, filled in by the background worker.
+    parts.append("## Top Comments")
+    parts.append("")
+    parts.append(COMMENTS_START_MARK)
+    parts.append("*Fetching comments... they'll appear here when ready.*")
+    parts.append(COMMENTS_END_MARK)
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    # Channel Context
+    parts.append("## Channel Context")
+    parts.append("")
+    parts.append(f"**About {channel}:**")
+    ch_desc = (channel_ctx.get("description") or "").strip()
+    parts.append(ch_desc if ch_desc else "*No channel description available.*")
+    parts.append("")
+    parts.append("**Recent videos from this channel:**")
+    recent = channel_ctx.get("recent_videos") or []
+    if not recent:
+        parts.append("- *No recent videos found.*")
+    else:
+        for v in recent:
+            v_title = v.get("title") or "(untitled)"
+            v_views = format_count(v.get("view_count"))
+            v_date = _fmt_iso_date(v.get("upload_date"))
+            parts.append(f"- {v_title} ({v_views} views, {v_date})")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+    parts.append("*Yoinked with [Yoink](https://yoink.video) by ReplayRyan*")
+    parts.append("")
+
+    return "\n".join(parts)
+
 
 # ---------------------------------------------------------------------------
 # Extraction core (shared by /extract and /session/add)
 # ---------------------------------------------------------------------------
 def _run_extraction(url: str, interval: int, output_folder: Path,
-                    *, open_explorer: bool = True) -> dict:
-    """Download + screenshot + transcript a single video into output_folder.
+                    *, open_explorer: bool = True,
+                    metadata: dict | None = None,
+                    topic: str | None = None) -> dict:
+    """Yoink a single video into output_folder.
 
-    output_folder is created if it doesn't exist. Returns a dict with title,
-    folder, combined_md, screenshot_count, video_slug.
+    Steps:
+      1. Fetch full metadata (cached as metadata.json) — already done if the
+         caller passed `metadata` (avoids a second yt-dlp call).
+      2. Download highest-res thumbnail to thumbnail.jpg.
+      3. Download video + subs, run ffmpeg screenshots, parse the SRT.
+      4. Fetch lightweight channel context (description + last 5 videos).
+      5. Write yoink.md with a placeholder Top Comments section.
+      6. Spawn a background thread that fetches comments and rewrites
+         the comments block in place.
+    Returns a dict with folder, yoink_md (current text), screenshot_count,
+    title, video_slug, caption_count.
     """
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    title = subprocess.check_output(
-        [*YTDLP_CMD, "--get-title", url],
-        text=True,
-        stderr=subprocess.PIPE,
-        **SUBPROCESS_KW,
-    ).strip()
+    if metadata is None:
+        metadata = _fetch_metadata(url)
+    if topic is None:
+        topic = _classify_topic(metadata)
 
+    title = metadata.get("title") or "Untitled"
     video_slug = slugify(title) or "video"
-    log.info("Extracting to %s (slug=%s)", output_folder, video_slug)
+    log.info("Yoinking '%s' -> %s (topic=%s)", title, output_folder, topic)
 
+    # Persist the raw metadata blob for debugging without re-downloading.
+    try:
+        (output_folder / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        log.warning("could not write metadata.json: %s", e)
+
+    # Thumbnail (best-effort; absence shouldn't fail the extraction).
+    _download_thumbnail(metadata, output_folder)
+
+    # Video + subs.
     subprocess.run(
         [
             *YTDLP_CMD,
@@ -139,25 +643,25 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
         plain = "\n".join(text for _, _, text in entries)
         (output_folder / "transcript.txt").write_text(plain, encoding="utf-8")
 
-    md_lines = [f"# {title}", "", f"Source: {url}", ""]
-    if not entries:
-        md_lines.append("> _No captions available for this video._")
-        md_lines.append("")
-    for i, shot in enumerate(shots):
-        start = i * interval
-        end = (i + 1) * interval
-        chunk = " ".join(t for s, _, t in entries if start <= s < end)
-        md_lines.append(f"## [{fmt_time(start)}]")
-        md_lines.append("")
-        md_lines.append(f"![shot {i+1}](screenshots/{shot.name})")
-        md_lines.append("")
-        if chunk:
-            md_lines.append(chunk)
-            md_lines.append("")
-    combined_md = "\n".join(md_lines)
-    (output_folder / "combined.md").write_text(combined_md, encoding="utf-8")
+    # Channel context (description + recent videos). Best-effort.
+    channel_url = (metadata.get("channel_url")
+                   or metadata.get("uploader_url")
+                   or "")
+    channel_ctx = _fetch_channel_context(channel_url)
+
+    # Build the corpus markdown.
+    yoink_md = _build_yoink_md(
+        metadata=metadata, url=url, entries=entries, shots=shots,
+        interval=interval, channel_ctx=channel_ctx,
+        yoinked_at=_now_iso(), topic=topic,
+    )
+    yoink_path = output_folder / "yoink.md"
+    yoink_path.write_text(yoink_md, encoding="utf-8")
 
     video_file.unlink(missing_ok=True)
+
+    # Comments fetch in background; updates yoink.md when done.
+    _start_comments_thread(url, output_folder, yoink_path)
 
     if open_explorer:
         try:
@@ -168,26 +672,50 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     return {
         "ok": True,
         "folder": str(output_folder),
-        "combined_md": combined_md,
+        "yoink_md": yoink_md,
         "screenshot_count": len(shots),
         "title": title,
         "video_slug": video_slug,
         "caption_count": len(entries),
+        "topic": topic,
     }
 
 
+INSTALL_HELP_URL = "https://yoink.video/install"
+
+
 def friendly_error(e: BaseException) -> str:
+    """Translate raw exceptions into copy the user can act on."""
     if isinstance(e, FileNotFoundError):
-        missing = e.filename or str(e)
-        return (f"Required tool not found on PATH: {missing}. "
-                "Install yt-dlp (pip install yt-dlp) and ffmpeg (winget install Gyan.FFmpeg).")
+        return ("Yoink can't find yt-dlp or ffmpeg on this machine. "
+                f"Install both, then try again. See {INSTALL_HELP_URL}")
+
     if isinstance(e, subprocess.CalledProcessError):
         stderr = (e.stderr.decode("utf-8", errors="ignore") if isinstance(e.stderr, bytes)
                   else (e.stderr or "")).strip()
+        # Match known YouTube failures so the user doesn't see a yt-dlp stack.
+        if "Sign in to confirm you're not a bot" in stderr or "captcha" in stderr.lower():
+            return ("YouTube wants a sign-in check. Open YouTube in this browser, "
+                    "sign in once, then try again.")
+        if "Video unavailable" in stderr or "This video is private" in stderr:
+            return "This video isn't available (private, deleted, or region-locked)."
+        if "Members-only" in stderr or "members only" in stderr.lower():
+            return "Members-only video — Yoink can't reach it without an account."
+        if "is live" in stderr.lower() or "premiere" in stderr.lower():
+            return "Yoink can't grab livestreams or premieres yet. Try again after the broadcast ends."
+        if "HTTP Error 429" in stderr:
+            return "YouTube is rate-limiting. Wait a minute, then try again."
+
         last = stderr.splitlines()[-1] if stderr else f"exit code {e.returncode}"
         tool = Path(e.cmd[0]).name if e.cmd else "subprocess"
-        return f"{tool} failed: {last}"
-    return f"{type(e).__name__}: {e}"
+        # Strip yt-dlp's "ERROR:" prefix if present so the message doesn't shout.
+        last = re.sub(r"^ERROR:\s*", "", last)
+        return f"Yoink hit an error from {tool}: {last}"
+
+    if isinstance(e, RuntimeError):
+        return f"Yoink couldn't finish this video: {e}"
+
+    return f"Yoink hit an unexpected error: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +771,7 @@ def _active_session() -> dict | None:
 
 
 def _demote_headings(md: str) -> str:
-    """Demote H1/H2 in a video's combined.md so they nest under the corpus's H2.
+    """Demote H1/H2 in a video's yoink.md so they nest under the corpus's H2.
 
     H1 -> H3, H2 -> H3 (we want everything below the per-video heading to read
     as a sub-section, but timestamp headings can stay at the same depth).
@@ -278,25 +806,26 @@ def _build_corpus(session: dict) -> str:
         url = v.get("url", "")
         video_slug = v.get("video_slug", "")
         rel = f"{video_slug}/"
-        combined_path = folder / video_slug / "combined.md"
+        yoink_path = folder / video_slug / "yoink.md"
 
         parts.append(f"## Video {i}: {title}")
         parts.append(f"Source: {url}")
         parts.append(f"Local folder: {rel}")
         parts.append("")
 
-        if combined_path.exists():
+        if yoink_path.exists():
             try:
-                body = combined_path.read_text(encoding="utf-8")
+                body = yoink_path.read_text(encoding="utf-8")
                 # Strip the per-video H1 (the title) — we already emitted Video N: title.
                 body = re.sub(r"^# .+\n", "", body, count=1)
-                # Strip the immediate "Source: ..." line if present.
-                body = re.sub(r"^Source: .+\n", "", body, count=1)
+                # Strip the leading metadata lines we'd duplicate (URL/Yoinked/etc.).
+                # The bold-prefixed lines come right after the title block.
+                body = re.sub(r"^(\*\*[^*]+:\*\*[^\n]*\n)+", "", body)
                 parts.append(_demote_headings(body.strip()))
             except OSError as e:
-                parts.append(f"> _Failed to read combined.md: {e}_")
+                parts.append(f"> _Failed to read yoink.md: {e}_")
         else:
-            parts.append("> _combined.md not found — extraction may have failed._")
+            parts.append("> _yoink.md not found — extraction may have failed._")
 
         parts.append("")
         parts.append("---")
@@ -373,8 +902,100 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_session_list()
         if self.path == "/session/active":
             return self._handle_session_active()
+        if self.path == "/open-prompts":
+            return self._handle_open_prompts()
+        if self.path == "/recent":
+            return self._handle_recent()
+        if self.path.startswith("/open-folder?"):
+            return self._handle_open_folder()
         log.info("GET %s -> 404", self.path)
         self._send_json(404, {"ok": False, "error": "not found"})
+
+    # ---- /recent ----
+    # Walk Desktop\Yoink\<topic>\<slug>\ and return the 3 most recent video
+    # folders. A folder counts as a yoink if it has a yoink.md inside it.
+    # Sessions root (_sessions/) is excluded.
+    def _handle_recent(self):
+        results = []
+        if DESKTOP_ROOT.exists():
+            candidates = []
+            for topic_dir in DESKTOP_ROOT.iterdir():
+                if not topic_dir.is_dir() or topic_dir.name.startswith("_"):
+                    continue
+                for video_dir in topic_dir.iterdir():
+                    if not video_dir.is_dir():
+                        continue
+                    yoink_md = video_dir / "yoink.md"
+                    if not yoink_md.exists():
+                        continue
+                    candidates.append((video_dir.stat().st_mtime,
+                                       topic_dir.name, video_dir))
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            for _mtime, topic_name, video_dir in candidates[:3]:
+                title = video_dir.name
+                # Prefer the title from metadata.json if available — it's the
+                # readable form, not the slugified folder name.
+                meta_path = video_dir / "metadata.json"
+                if meta_path.exists():
+                    try:
+                        m = json.loads(meta_path.read_text(encoding="utf-8"))
+                        title = m.get("title") or title
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                results.append({
+                    "title": title,
+                    "topic": topic_name,
+                    "folder": str(video_dir),
+                })
+        self._send_json(200, {"ok": True, "recent": results})
+
+    # ---- /open-folder?path=... ----
+    # Pop Explorer at an arbitrary folder. Used by the "Recent yoinks" list
+    # so clicking a row opens that folder. The path must be inside
+    # DESKTOP_ROOT — we don't want this turning into an arbitrary-folder
+    # opener.
+    def _handle_open_folder(self):
+        qs = parse_qs(urlparse(self.path).query)
+        target = (qs.get("path") or [""])[0]
+        if not target:
+            return self._send_json(400, {"ok": False, "error": "path required"})
+        try:
+            p = Path(target).resolve()
+            # Sandboxing: only allow folders inside DESKTOP_ROOT. relative_to
+            # raises ValueError when p is outside the root.
+            p.relative_to(DESKTOP_ROOT.resolve())
+        except (ValueError, OSError):
+            return self._send_json(400, {
+                "ok": False, "error": "path is outside the Yoink folder",
+            })
+        if not p.exists() or not p.is_dir():
+            return self._send_json(404, {"ok": False, "error": "folder not found"})
+        try:
+            os.startfile(str(p))  # type: ignore[attr-defined]
+        except Exception as e:
+            return self._send_json(200, {"ok": False, "error": str(e)})
+        self._send_json(200, {"ok": True, "folder": str(p)})
+
+    # ---- /open-prompts ----
+    # Pop Explorer at extension/prompts.json so the user can edit their custom
+    # prompts without hunting through the project folder. Selected so the file
+    # is highlighted (not just the parent folder opened).
+    def _handle_open_prompts(self):
+        prompts_path = HERE / "extension" / "prompts.json"
+        if not prompts_path.exists():
+            return self._send_json(200, {
+                "ok": False,
+                "error": f"prompts.json not found at {prompts_path}",
+            })
+        try:
+            subprocess.Popen(
+                ["explorer", f"/select,{prompts_path}"],
+                **SUBPROCESS_KW,
+            )
+        except Exception as e:
+            return self._send_json(200, {"ok": False, "error": str(e)})
+        log.info("GET /open-prompts -> %s", prompts_path)
+        self._send_json(200, {"ok": True, "path": str(prompts_path)})
 
     def do_POST(self):
         try:
@@ -422,17 +1043,14 @@ class Handler(BaseHTTPRequestHandler):
         DESKTOP_ROOT.mkdir(parents=True, exist_ok=True)
         with _extract_lock:
             try:
-                # Need the title before we know the folder. Inline the title fetch
-                # to mirror the prior behavior of slug-by-title.
-                title = subprocess.check_output(
-                    [*YTDLP_CMD, "--get-title", url],
-                    text=True, stderr=subprocess.PIPE, **SUBPROCESS_KW,
-                ).strip()
-                folder = DESKTOP_ROOT / (slugify(title) or "video")
-                # _run_extraction will also fetch the title (a second cheap call).
-                # Trade-off: keeps _run_extraction self-contained for sessions
-                # where the parent doesn't need the title up front.
-                result = _run_extraction(url, interval, folder)
+                # One metadata fetch up front — used both to derive the folder
+                # slug here and re-used by _run_extraction (avoids a 2nd call).
+                metadata = _fetch_metadata(url)
+                title = metadata.get("title") or "Untitled"
+                topic = _classify_topic(metadata)
+                folder = DESKTOP_ROOT / _topic_folder_name(topic) / (slugify(title) or "video")
+                result = _run_extraction(url, interval, folder,
+                                          metadata=metadata, topic=topic)
             except BaseException as e:
                 msg = friendly_error(e)
                 log.error("POST /extract -> error: %s", msg)
@@ -500,14 +1118,13 @@ class Handler(BaseHTTPRequestHandler):
 
         log.info("POST /session/add session=%s url=%s -> running", session_id, url)
         sess_folder = _session_folder(session_id)
-        # Disambiguate the per-video subfolder by URL+title — call yt-dlp
-        # to get the title first so we know the slug.
+        # Disambiguate the per-video subfolder by title — fetch metadata once
+        # and re-use it inside _run_extraction.
         with _extract_lock:
             try:
-                title = subprocess.check_output(
-                    [*YTDLP_CMD, "--get-title", url],
-                    text=True, stderr=subprocess.PIPE, **SUBPROCESS_KW,
-                ).strip()
+                metadata = _fetch_metadata(url)
+                title = metadata.get("title") or "Untitled"
+                topic = _classify_topic(metadata)
                 video_slug = slugify(title) or "video"
                 target = sess_folder / video_slug
                 # Disambiguate if same-named video already added.
@@ -515,7 +1132,9 @@ class Handler(BaseHTTPRequestHandler):
                     video_slug = f"{video_slug}_{uuid.uuid4().hex[:6]}"
                     target = sess_folder / video_slug
 
-                result = _run_extraction(url, interval, target, open_explorer=False)
+                result = _run_extraction(url, interval, target,
+                                          open_explorer=False,
+                                          metadata=metadata, topic=topic)
             except BaseException as e:
                 msg = friendly_error(e)
                 log.error("POST /session/add -> error: %s", msg)
@@ -669,10 +1288,11 @@ def main():
     DESKTOP_ROOT.mkdir(parents=True, exist_ok=True)
     SESSIONS_ROOT.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    log.info("Yoink server v%s starting on http://%s:%d", VERSION, HOST, PORT)
+    log.info("Yoink server v%s running on http://%s:%d", VERSION, HOST, PORT)
+    log.info("Ready to yoink. Click any YouTube video's Yoink button.")
+    log.info("Output: %s", DESKTOP_ROOT)
     log.info("Log file: %s", LOG_PATH)
-    log.info("Sessions root: %s", SESSIONS_ROOT)
-    maybe_toast("Yoink", f"Server v{VERSION} running on http://{HOST}:{PORT}")
+    maybe_toast("Yoink", f"Yoink v{VERSION} is running. Ready to yoink.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

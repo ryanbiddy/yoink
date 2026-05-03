@@ -1,7 +1,8 @@
-// Send to Claude — content script.
-// Injects a button under the YouTube player (alongside Like / Share / Download)
-// that POSTs the current video URL to the local helper server, copies the
-// returned markdown to the clipboard, and opens claude.ai in a new tab.
+// Yoink — content script.
+// Injects a Yoink button under the YouTube player (alongside Like / Share /
+// Download) that POSTs the current video URL to the local helper server,
+// copies the returned markdown to the clipboard, and opens claude.ai in a
+// new tab.
 //
 // Network/storage logic lives in lib/extract.js (exposed as window.STC) and
 // is shared with background.js.
@@ -92,7 +93,7 @@
     try {
       chrome.runtime.sendMessage({ type: "notify", title, message });
     } catch (e) {
-      console.warn("[Send to Claude] notify failed", e);
+      console.warn("[Yoink] notify failed", e);
     }
   }
 
@@ -100,7 +101,7 @@
     try {
       chrome.runtime.sendMessage({ type: "openTab", url });
     } catch (e) {
-      console.warn("[Send to Claude] openTab failed", e);
+      console.warn("[Yoink] openTab failed", e);
     }
   }
 
@@ -118,7 +119,7 @@
   }
 
   function defaultLabel() {
-    return activeSession ? `Add to session: ${activeSession.name || activeSession.id}` : "Send to Claude";
+    return activeSession ? `Add to session: ${activeSession.name || activeSession.id}` : "Yoink";
   }
 
   function refreshDefaultLabel() {
@@ -150,39 +151,39 @@
   }
 
   async function runExtract(btn, url, interval) {
-    setButtonState(btn, "working", "Working...");
+    setButtonState(btn, "working", "Yoinking...");
 
     let data;
     try {
       data = await STC.postExtractViaBg(url, interval);
     } catch (e) {
-      console.error("[Send to Claude] server unreachable", e);
-      setButtonState(btn, "error", "Start the local server");
-      btn.title = "Run start_server.bat in the yoink folder, then try again.";
-      notify("Send to Claude — server offline",
-             `Couldn't reach ${STC.SERVER}. Run start_server.bat in the yoink folder.`);
+      console.error("[Yoink] server unreachable", e);
+      setButtonState(btn, "error", "Yoink server offline");
+      btn.title = "Start Yoink from your system tray, or run start_server.bat from the install folder.";
+      notify("Yoink server is offline",
+             "Start Yoink from your system tray, or run start_server.bat from the install folder.");
       resetButtonAfter(btn, 5000);
       return;
     }
 
     if (!data || !data.ok) {
-      const msg = (data && data.error) || "Unknown server error.";
-      setButtonState(btn, "error", "Failed — see notification");
+      const msg = (data && data.error) || "Yoink hit an unknown error.";
+      setButtonState(btn, "error", "Yoink failed");
       btn.title = msg;
-      notify("Send to Claude — failed", msg);
+      notify("Yoink failed", msg);
       resetButtonAfter(btn, 5000);
       return;
     }
 
     let copied = false;
     try {
-      await navigator.clipboard.writeText(data.combined_md);
+      await navigator.clipboard.writeText(data.yoink_md);
       copied = true;
     } catch (e) {
-      console.warn("[Send to Claude] clipboard API failed, falling back", e);
+      console.warn("[Yoink] clipboard API failed, falling back", e);
       try {
         const ta = document.createElement("textarea");
-        ta.value = data.combined_md;
+        ta.value = data.yoink_md;
         ta.style.position = "fixed";
         ta.style.left = "-9999px";
         document.body.appendChild(ta);
@@ -190,19 +191,24 @@
         copied = document.execCommand("copy");
         document.body.removeChild(ta);
       } catch (e2) {
-        console.error("[Send to Claude] clipboard fallback failed", e2);
+        console.error("[Yoink] clipboard fallback failed", e2);
       }
     }
 
     openTab("https://claude.ai/new");
 
-    const shotsLine = `${data.screenshot_count} screenshots saved.`;
-    const clipLine = copied
-      ? "Transcript copied. Paste in the new tab with Ctrl+V."
-      : "Transcript NOT copied (clipboard blocked). Open combined.md in the folder.";
-    notify("Ready in Claude", `${clipLine} Screenshots folder is open in Explorer. ${shotsLine}`);
+    // Lead with the topic so the user spots Uncategorized landings; suppress
+    // the "Saved to: ..." line entirely when the topic is missing or
+    // Uncategorized so the notification doesn't read awkwardly.
+    const realTopic = data.topic && data.topic !== "Uncategorized" ? data.topic : null;
+    const topicLine = realTopic ? `Saved to: ${realTopic}. ` : "";
+    const tail = "Comments will appear in yoink.md when ready.";
+    const message = copied
+      ? `${topicLine}Paste with Ctrl+V in Claude or ChatGPT. ${tail}`.trim()
+      : `${topicLine}Clipboard was blocked — open yoink.md in the folder.`.trim();
+    notify("Yoinked!", message);
 
-    setButtonState(btn, "success", "Sent ✓");
+    setButtonState(btn, "success", "Yoinked ✓");
     btn.title = `Saved to: ${data.folder}`;
     resetButtonAfter(btn, 3000);
   }
@@ -215,27 +221,27 @@
     try {
       data = await STC.addToSessionViaBg(activeSession.id, url, interval);
     } catch (e) {
-      console.error("[Send to Claude] server unreachable", e);
-      setButtonState(btn, "error", "Start the local server");
-      btn.title = "Run start_server.bat in the yoink folder, then try again.";
-      notify("Send to Claude — server offline",
-             `Couldn't reach ${STC.SERVER}. Run start_server.bat in the yoink folder.`);
+      console.error("[Yoink] server unreachable", e);
+      setButtonState(btn, "error", "Yoink server offline");
+      btn.title = "Start Yoink from your system tray, or run start_server.bat from the install folder.";
+      notify("Yoink server is offline",
+             "Start Yoink from your system tray, or run start_server.bat from the install folder.");
       resetButtonAfter(btn, 5000);
       return;
     }
 
     if (!data || !data.ok) {
-      const msg = (data && data.error) || "Unknown server error.";
-      setButtonState(btn, "error", "Failed — see notification");
+      const msg = (data && data.error) || "Yoink hit an unknown error.";
+      setButtonState(btn, "error", "Yoink failed");
       btn.title = msg;
-      notify("Send to Claude — failed", msg);
+      notify("Yoink failed", msg);
       resetButtonAfter(btn, 5000);
       return;
     }
 
     notify("Added to session",
            `${sessionName} · ${data.video_count} video${data.video_count === 1 ? "" : "s"} so far. ` +
-           `End the session in the popup to send to Claude.`);
+           `End the session in the popup to send to Claude or ChatGPT.`);
 
     setButtonState(btn, "success", `Added (${data.video_count})`);
     btn.title = `Saved to: ${data.folder}`;

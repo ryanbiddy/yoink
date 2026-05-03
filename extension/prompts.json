@@ -1,14 +1,42 @@
 [
   {
-    "label": "Find patterns",
-    "text": "Find the patterns across these videos. What advice do all of them agree on? Where do they disagree? Cite the specific video and timestamp for each claim."
+    "id": "decode-hook",
+    "label": "Decode the hook",
+    "prompt": "I just pasted a Yoink corpus from a YouTube video. Decode the hook of this video. What's the opening line, what emotional or curiosity lever does it pull, and how does the thumbnail/title/first 30 seconds work together? Be specific."
   },
   {
-    "label": "Pull tactics",
-    "text": "Pull out every concrete tactic mentioned across these videos. Group them by theme. For each tactic, cite which video it came from."
+    "id": "outline-structure",
+    "label": "Outline the structure",
+    "prompt": "Outline the structure of this video with timestamps. Identify intro, hook, value proposition, demonstration, social proof, and call to action — or whatever sections actually exist. Note pacing changes."
   },
   {
-    "label": "Summarize + synthesize",
-    "text": "Summarize each video in 2 sentences, then write one synthesis paragraph that ties them together — what is the larger picture this set of videos reveals?"
+    "id": "quotable-moments",
+    "label": "Find quotable moments",
+    "prompt": "Find the 3 most quotable moments in this video. For each, give me the timestamp, the exact quote, and one sentence on why it lands."
+  },
+  {
+    "id": "would-improve",
+    "label": "What would make this 2x better",
+    "prompt": "What would make this video 2x better? Be specific and constructive — name what's working, what's underperforming, and what 3 changes would matter most."
+  },
+  {
+    "id": "tactics-list",
+    "label": "Pull every concrete tactic",
+    "prompt": "Pull out every concrete tactic, technique, or piece of advice mentioned in this video. Group by theme. Cite timestamps."
+  },
+  {
+    "id": "tools-mentioned",
+    "label": "List tools and resources",
+    "prompt": "List every tool, product, app, book, or resource referenced in this video. For each, note the timestamp and what context it was mentioned in."
+  },
+  {
+    "id": "comment-themes",
+    "label": "What are commenters saying",
+    "prompt": "Analyze the top comments. What themes recur? What questions do viewers ask? What praise or criticism stands out? What does this tell us about what landed and what didn't?"
+  },
+  {
+    "id": "plan-my-video",
+    "label": "Help me plan a video on this topic",
+    "prompt": "Based on this video, help me plan a video of my own on a similar topic. Suggest a hook, a structure, key points to hit, and what to avoid based on what this video did well or poorly. Ask me clarifying questions about my niche and angle before drafting."
   }
 ]

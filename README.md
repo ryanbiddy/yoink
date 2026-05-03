@@ -26,7 +26,7 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 
 ## Install
 
-*One-click installer ships in the v1 launch. Manual setup until then — see [REQUIREMENTS.md](./REQUIREMENTS.md).*
+One-click installer ships in v1 launch (target: 2 weeks). Manual setup until then — see [REQUIREMENTS.md](./REQUIREMENTS.md).
 
 ## How it works
 
@@ -34,6 +34,24 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 2. Yoink extracts transcript, screenshots, comments, metadata
 3. Markdown corpus copied to clipboard, opens Claude or ChatGPT
 4. Paste, run a prompt, get analysis
+
+## Customizing the prompt library
+
+The Yoink popup ships with eight starter prompts ("Decode the hook", "Outline the structure", and so on). They live in `extension/prompts.json` and are fully editable — add your own, delete the ones you don't use, rename labels, anything goes.
+
+Open the file via the **Edit prompts ▸** link at the bottom of the popup's prompt panel (it pops Explorer at the file). Or edit `extension/prompts.json` directly. The format is:
+
+```json
+[
+  { "id": "my-prompt", "label": "Short button label", "prompt": "The full prompt body..." }
+]
+```
+
+Changes take effect the next time you open the popup — no extension reload required.
+
+## Customizing topic folders
+
+Videos are auto-sorted into topic folders under `Desktop\Yoink\` based on keyword matches against `topics.json` in the project root. Edit that file to add, remove, or rename topics, or to tweak the keyword lists. New keywords apply on the next Yoink.
 
 ## Roadmap
 

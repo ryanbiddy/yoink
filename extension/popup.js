@@ -29,15 +29,26 @@ const queueEl = document.getElementById("queue-depth");
 const clearBtn = document.getElementById("clear-queue");
 
 // ---- Server status --------------------------------------------------------
+const statusHelp = document.getElementById("status-help");
+
 async function ping() {
   const data = await STC.ping();
   if (data && data.ok) {
     dot.classList.remove("down"); dot.classList.add("up");
-    status.textContent = `Server up (v${data.version || "?"})`;
+    status.textContent = "Yoink is running.";
+    if (statusHelp) statusHelp.classList.add("hidden");
   } else {
     dot.classList.remove("up"); dot.classList.add("down");
-    status.textContent = "Server down — run start_server.bat";
+    status.textContent = "Yoink server is offline.";
+    if (statusHelp) statusHelp.classList.remove("hidden");
   }
+}
+
+if (statusHelp) {
+  statusHelp.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    showToast("Run start_server.bat from your Yoink install folder.");
+  });
 }
 
 // ---- Interval setting -----------------------------------------------------
@@ -167,7 +178,7 @@ cancelBtn.addEventListener("click", async () => {
   }
 });
 
-// ---- End & Send to Claude -------------------------------------------------
+// ---- End session ----------------------------------------------------------
 endBtn.addEventListener("click", async () => {
   if (!activeSession) return;
   const id = activeSession.id;
@@ -183,14 +194,14 @@ endBtn.addEventListener("click", async () => {
   } catch (e) {
     alert(`Couldn't reach server: ${e}`);
     endBtn.disabled = false;
-    endBtn.textContent = "End & Send to Claude";
+    endBtn.textContent = "End session";
     return;
   }
 
   if (!res || !res.ok) {
     alert((res && res.error) || "Failed to close session.");
     endBtn.disabled = false;
-    endBtn.textContent = "End & Send to Claude";
+    endBtn.textContent = "End session";
     return;
   }
 
@@ -207,22 +218,21 @@ endBtn.addEventListener("click", async () => {
     } catch { /* leave copied false */ }
   }
 
-  // Open Claude
-  await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
-
-  // Notify
+  // Notify. The destination buttons up top let the user pick where to paste,
+  // so we don't auto-open a tab here — that would force Claude.
   const lines = `${fmtCount(res.video_count, "video")}, ${fmtCount(res.caption_count || 0, "caption line")}`;
   const note = copied
-    ? `Session sent. ${lines}. Paste in Claude.`
-    : `Session closed. ${lines}. Clipboard failed — corpus.md is at the session folder (already open in Explorer).`;
-  await chrome.runtime.sendMessage({ type: "notify", title: "Research session sent", message: note });
+    ? `Session yoinked! ${lines}. Pick a destination above and paste.`
+    : `Session closed. ${lines}. Clipboard failed — corpus.md is in the session folder (already open in Explorer).`;
+  await chrome.runtime.sendMessage({ type: "notify", title: "Research session yoinked", message: note });
+  if (copied) showToast("Session yoinked! Pick a destination above.");
 
   // Large-corpus warning
   if ((res.corpus_md || "").length > CORPUS_WARN_CHARS) {
     sessionWarn.classList.remove("hidden");
     sessionWarn.innerHTML =
-      `Corpus is ${(res.corpus_md.length / 1000).toFixed(0)}K characters — may exceed Claude's ` +
-      `paste-friendly size. Drag <code>corpus.md</code> into Claude instead.<br>` +
+      `Corpus is ${(res.corpus_md.length / 1000).toFixed(0)}K characters — may exceed the ` +
+      `paste-friendly size. Drag <code>corpus.md</code> into Claude or ChatGPT instead.<br>` +
       `<button id="open-folder" class="secondary" style="margin-top:6px">Open session folder</button>`;
     document.getElementById("open-folder").addEventListener("click", () => {
       STC.openSession(id);
@@ -230,7 +240,7 @@ endBtn.addEventListener("click", async () => {
   }
 
   endBtn.disabled = false;
-  endBtn.textContent = "End & Send to Claude";
+  endBtn.textContent = "End session";
   await refreshActiveFromServer();
   await loadRecentSessions();
 });
@@ -268,34 +278,59 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// ---- Suggested prompts ----------------------------------------------------
-async function loadPrompts() {
-  promptsEl.innerHTML = "";
-  let prompts = [];
+// ---- Prompt library -------------------------------------------------------
+// prompts.json is read fresh each time the popup opens. Users can edit it
+// directly (see README) and the change shows up next time the popup is opened.
+const quickPromptsEl = document.getElementById("quick-prompts");
+const popupToast = document.getElementById("popup-toast");
+
+function showToast(message) {
+  if (!popupToast) return;
+  popupToast.textContent = message;
+  popupToast.classList.add("show");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => popupToast.classList.remove("show"), 1800);
+}
+
+async function fetchPrompts() {
   try {
     const res = await fetch(chrome.runtime.getURL("prompts.json"));
-    prompts = await res.json();
+    return await res.json();
   } catch (e) {
-    console.warn("[popup] prompts.json missing", e);
+    console.warn("[popup] prompts.json missing or invalid", e);
+    return [];
+  }
+}
+
+function renderPromptList(targetEl, prompts) {
+  targetEl.innerHTML = "";
+  if (!prompts.length) {
+    const empty = document.createElement("div");
+    empty.className = "panel-muted";
+    empty.style.cssText = "font-size:11px;padding:4px 6px";
+    empty.textContent = "No prompts defined. Edit prompts.json to add some.";
+    targetEl.appendChild(empty);
     return;
   }
   for (const p of prompts) {
+    const body = p.prompt || p.text || "";
     const row = document.createElement("div");
     row.className = "prompt-item";
 
     const label = document.createElement("span");
     label.className = "prompt-label";
-    label.title = p.text;
-    label.textContent = p.label;
+    label.title = body;
+    label.textContent = p.label || p.id || "(untitled)";
 
     const btn = document.createElement("button");
     btn.className = "copy-btn";
     btn.textContent = "Copy";
     btn.addEventListener("click", async () => {
       try {
-        await navigator.clipboard.writeText(p.text);
+        await navigator.clipboard.writeText(body);
         btn.textContent = "Copied";
         btn.classList.add("copied");
+        showToast("Prompt copied! Paste in Claude after the corpus.");
         setTimeout(() => {
           btn.textContent = "Copy";
           btn.classList.remove("copied");
@@ -307,8 +342,16 @@ async function loadPrompts() {
 
     row.appendChild(label);
     row.appendChild(btn);
-    promptsEl.appendChild(row);
+    targetEl.appendChild(row);
   }
+}
+
+async function loadPrompts() {
+  const prompts = await fetchPrompts();
+  // Always-visible Quick Prompts panel.
+  if (quickPromptsEl) renderPromptList(quickPromptsEl, prompts);
+  // Session panel (only shown when a session is active).
+  if (promptsEl) renderPromptList(promptsEl, prompts);
 }
 
 // ---- Background queue panel ----------------------------------------------
@@ -339,6 +382,69 @@ clearBtn.addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "clearQueue" }, () => refreshQueue());
 });
 
+// ---- Recent yoinks --------------------------------------------------------
+const recentYoinksEl = document.getElementById("recent-yoinks");
+
+async function loadRecentYoinks() {
+  if (!recentYoinksEl) return;
+  let recent = [];
+  try {
+    const res = await STC.listRecent();
+    recent = (res && res.recent) || [];
+  } catch { /* server may be down — leave the placeholder */ }
+  recentYoinksEl.innerHTML = "";
+  if (!recent.length) {
+    const empty = document.createElement("div");
+    empty.className = "panel-muted";
+    empty.style.cssText = "font-size:11px;padding:4px 6px";
+    empty.textContent = "No yoinks yet.";
+    recentYoinksEl.appendChild(empty);
+    return;
+  }
+  for (const r of recent) {
+    const item = document.createElement("div");
+    item.className = "recent-item";
+    item.title = r.folder || "";
+    item.innerHTML = `<span>${escapeHtml(r.title || "(untitled)")}</span>` +
+                     `<span class="meta">${escapeHtml(r.topic || "—")}</span>`;
+    item.addEventListener("click", () => {
+      if (r.folder) STC.openFolder(r.folder);
+    });
+    recentYoinksEl.appendChild(item);
+  }
+}
+
+// ---- Destination buttons --------------------------------------------------
+const CLAUDE_URL = "https://claude.ai/new";
+const CHATGPT_URL = "https://chat.openai.com/?model=gpt-4o";
+
+function openDestination(url, label) {
+  chrome.tabs.create({ url, active: true });
+  showToast(`Yoinked! Paste with Ctrl+V in ${label}.`);
+}
+
+document.getElementById("send-claude").addEventListener("click", () => {
+  openDestination(CLAUDE_URL, "Claude");
+});
+document.getElementById("send-chatgpt").addEventListener("click", () => {
+  openDestination(CHATGPT_URL, "ChatGPT");
+});
+
+// ---- Edit prompts ---------------------------------------------------------
+// The server (which knows the on-disk path of prompts.json) opens Explorer
+// at the file. Avoids dragging the user to chrome://extensions and beyond.
+document.getElementById("edit-prompts").addEventListener("click", async (ev) => {
+  ev.preventDefault();
+  try {
+    const res = await STC.openPromptsFile();
+    if (!res || res.ok === false) {
+      showToast("Couldn't open prompts.json — server may be down.");
+    }
+  } catch {
+    showToast("Couldn't open prompts.json — server may be down.");
+  }
+});
+
 // ---- Boot -----------------------------------------------------------------
 ping();
 loadInterval();
@@ -346,6 +452,7 @@ loadPrompts();
 refreshQueue();
 refreshActiveFromServer();
 loadRecentSessions();
+loadRecentYoinks();
 
 const queueTimer = setInterval(refreshQueue, 1000);
 const sessionTimer = setInterval(async () => {

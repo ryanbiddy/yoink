@@ -79,7 +79,7 @@
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const targetUrl = `${SERVER}/extract`;
     const requestBody = { url, interval };
-    console.log("[Send to Claude] POST", targetUrl, requestBody);
+    console.log("[Yoink] POST", targetUrl, requestBody);
     try {
       let res;
       try {
@@ -92,21 +92,21 @@
         });
       } catch (e) {
         if (e instanceof TypeError) {
-          console.error("[Send to Claude] server unreachable at", targetUrl, e);
+          console.error("[Yoink] server unreachable at", targetUrl, e);
         } else {
-          console.error("[Send to Claude] fetch aborted/failed", targetUrl, e);
+          console.error("[Yoink] fetch aborted/failed", targetUrl, e);
         }
         throw e;
       }
 
       const text = await res.text();
       if (!res.ok) {
-        console.error("[Send to Claude] HTTP", res.status, "body:", text);
+        console.error("[Yoink] HTTP", res.status, "body:", text);
       }
       try {
         return JSON.parse(text);
       } catch {
-        console.error("[Send to Claude] JSON parse error, raw text:", text);
+        console.error("[Yoink] JSON parse error, raw text:", text);
         return { ok: false, error: "Server returned a non-JSON response." };
       }
     } finally {
@@ -162,6 +162,11 @@
   function listSessions() { return _getJson("/session/list"); }
   function getActiveSession() { return _getJson("/session/active"); }
   function openSession(sessionId) { return _postJson("/session/open", { session_id: sessionId }); }
+  function openPromptsFile() { return _getJson("/open-prompts"); }
+  function listRecent() { return _getJson("/recent"); }
+  function openFolder(path) {
+    return _getJson("/open-folder?path=" + encodeURIComponent(path));
+  }
 
   // ---- Background-proxied versions for content scripts -----------------
   // Page-context fetches from content scripts can be intercepted by Chrome's
@@ -174,7 +179,7 @@
     try {
       res = await chrome.runtime.sendMessage({ type, ...payload });
     } catch (e) {
-      console.error("[Send to Claude] background proxy failed", type, e);
+      console.error("[Yoink] background proxy failed", type, e);
       throw new TypeError(`Background SW unreachable: ${e && e.message || e}`);
     }
     if (!res) throw new TypeError("No response from background service worker.");
@@ -207,5 +212,8 @@
     openSession,
     postExtractViaBg,
     addToSessionViaBg,
+    openPromptsFile,
+    listRecent,
+    openFolder,
   };
 })(typeof self !== "undefined" ? self : globalThis);

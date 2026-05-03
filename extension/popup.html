@@ -130,11 +130,48 @@
     button.primary:hover { background: #468a5a; }
     button.secondary { background: #3a3a3f; color: #e6e6e6; border-color: #4a4a4f; margin-top: 8px; }
     button.secondary:hover { background: #45454a; }
+    button.dest { background: #2e3a4d; color: #d9e7ff; border-color: #3e4a6d; }
+    button.dest:hover { background: #3a4a5d; }
+    button.dest.chatgpt { background: #2e4d3a; color: #d9ffe7; border-color: #3e6d4a; }
+    button.dest.chatgpt:hover { background: #3a5d4a; }
     button.danger { background: #3a1f1f; color: #ffd9d9; border-color: #6a3a3a; margin-top: 8px; }
     button.danger:hover { background: #4a2a2a; }
     button[disabled] { opacity: 0.5; cursor: not-allowed; }
     .button-row { display: flex; gap: 6px; }
     .button-row > button { width: auto; flex: 1; margin-top: 8px; }
+    .quick-prompts {
+      margin-top: 6px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .edit-prompts-row {
+      margin-top: 6px;
+      text-align: right;
+    }
+    .edit-prompts-link {
+      font-size: 11px;
+      color: #888;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .edit-prompts-link:hover { color: #ccc; }
+    .toast {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #3a6e4a;
+      color: #d9ffe7;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      z-index: 999;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; }
     .recent {
       margin-top: 6px;
       max-height: 110px;
@@ -205,7 +242,35 @@
 
   <div class="row">
     <span id="dot" class="dot"></span>
-    <span id="status">Checking server...</span>
+    <span id="status">Checking Yoink...</span>
+    <a id="status-help" class="edit-prompts-link hidden" style="margin-left: auto;">How to start ▸</a>
+  </div>
+
+  <!-- Destination -->
+  <div class="panel">
+    <div class="panel-title">Send to</div>
+    <div class="button-row">
+      <button id="send-claude" class="dest">Claude</button>
+      <button id="send-chatgpt" class="dest chatgpt">ChatGPT</button>
+    </div>
+    <div class="hint">Yoink loads your clipboard. Pick a destination and paste with Ctrl+V.</div>
+  </div>
+
+  <!-- Quick prompts -->
+  <div class="panel">
+    <div class="panel-title">After pasting, copy a starter prompt:</div>
+    <div id="quick-prompts" class="quick-prompts"></div>
+    <div class="edit-prompts-row">
+      <a class="edit-prompts-link" id="edit-prompts">Edit prompts ▸</a>
+    </div>
+  </div>
+
+  <!-- Recent yoinks -->
+  <div class="panel" id="recent-panel">
+    <div class="panel-title">Recent yoinks</div>
+    <div id="recent-yoinks" class="recent">
+      <div class="panel-muted" style="font-size:11px;padding:4px 6px">No yoinks yet.</div>
+    </div>
   </div>
 
   <label for="interval">Screenshot interval (seconds)</label>
@@ -251,7 +316,7 @@
     </details>
 
     <div class="button-row">
-      <button id="end-session" class="primary">End &amp; Send to Claude</button>
+      <button id="end-session" class="primary">End session</button>
       <button id="cancel-session" class="danger">Cancel</button>
     </div>
     <div id="session-warn" class="warn hidden"></div>
@@ -267,9 +332,11 @@
 
   <div class="footer">
     Server: <code>http://127.0.0.1:5179</code><br>
-    Click <b>Send to Claude</b> under any video, or right-click a YouTube
+    Click <b>Yoink</b> under any video, or right-click a YouTube
     link/thumbnail.
   </div>
+
+  <div id="popup-toast" class="toast"></div>
 
   <script src="lib/extract.js"></script>
   <script src="popup.js"></script>

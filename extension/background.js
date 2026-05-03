@@ -15,7 +15,7 @@ importScripts("lib/extract.js");
 const MENU_LINK = "stc-extract-link";
 const MENU_PAGE = "stc-extract-page";
 const MENU_SESSION = "stc-extract-session";
-const ICON_URL = chrome.runtime.getURL("icons/icon128.png");
+const ICON_URL = chrome.runtime.getURL("icons/icon-128.png");
 const OFFSCREEN_URL = "offscreen.html";
 
 const LINK_PATTERNS = [
@@ -54,13 +54,13 @@ async function rebuildContextMenus() {
 
   chrome.contextMenus.create({
     id: MENU_LINK,
-    title: "Send to Claude (extract this video)",
+    title: "Yoink this video",
     contexts: ["link"],
     targetUrlPatterns: LINK_PATTERNS,
   });
   chrome.contextMenus.create({
     id: MENU_PAGE,
-    title: "Send to Claude (extract this page)",
+    title: "Yoink this page",
     contexts: ["page", "video"],
     documentUrlPatterns: PAGE_PATTERNS,
   });
@@ -70,7 +70,7 @@ async function rebuildContextMenus() {
     const name = active.name || active.id;
     chrome.contextMenus.create({
       id: MENU_SESSION,
-      title: `Send to Claude (add to session: ${name})`,
+      title: `Yoink into session: ${name}`,
       contexts: ["link", "page", "video"],
       targetUrlPatterns: LINK_PATTERNS,
       documentUrlPatterns: PAGE_PATTERNS,
@@ -98,7 +98,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
   const normalized = STC.normalizeYouTubeUrl(raw || "");
   if (!normalized) {
-    notify("Send to Claude — invalid URL",
+    notify("Yoink — invalid URL",
            "Couldn't find a YouTube video ID in that link.");
     return;
   }
@@ -108,7 +108,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (kind === "session_add") {
     const active = await getActiveFromStorage();
     if (!active || !active.id) {
-      notify("Send to Claude", "No active session — start one in the popup first.");
+      notify("Yoink", "No active session — start one in the popup first.");
       return;
     }
     job.session_id = active.id;
@@ -130,7 +130,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === "notify") {
-    notify(msg.title || "Send to Claude", msg.message || "")
+    notify(msg.title || "Yoink", msg.message || "")
       .then((id) => sendResponse({ ok: true, id }));
     return true;
   }
@@ -159,6 +159,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       try {
         const data = await STC.postExtract(msg.url, msg.interval);
         sendResponse({ data });
+        if (data && data.ok) tryOpenPopup();
       } catch (e) {
         console.error("[stc] proxied extract failed", e);
         sendResponse({ networkError: String(e && e.message || e) });
@@ -171,6 +172,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       try {
         const data = await STC.addToSession(msg.session_id, msg.url, msg.interval);
         sendResponse({ data });
+        if (data && data.ok) tryOpenPopup();
       } catch (e) {
         console.error("[stc] proxied session add failed", e);
         sendResponse({ networkError: String(e && e.message || e) });
@@ -179,6 +181,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 });
+
+// Best-effort popup auto-open after a successful yoink. Chrome MV3 only
+// honors openPopup() in narrow circumstances (must be a focused window with
+// the action visible, sometimes requires a recent user gesture). Failures
+// are silently swallowed — the user can still click the extension icon.
+function tryOpenPopup() {
+  try {
+    if (chrome.action && typeof chrome.action.openPopup === "function") {
+      const maybe = chrome.action.openPopup();
+      if (maybe && typeof maybe.catch === "function") {
+        maybe.catch(() => { /* ignore — MV3 restrictions */ });
+      }
+    }
+  } catch { /* ignore */ }
+}
 
 // ---- Notifications -------------------------------------------------------
 function notify(title, message) {
@@ -277,17 +294,17 @@ async function _doEnqueue(job) {
 
   const ahead = (state.busy ? 1 : 0) + state.queue.length - 1;
   if (state.busy || state.queue.length > 1) {
-    notify("Send to Claude — queued", `Queued — ${ahead} video${ahead === 1 ? "" : "s"} ahead.`);
+    notify("Yoink — queued", `Queued — ${ahead} video${ahead === 1 ? "" : "s"} ahead.`);
   } else {
-    const verb = job.kind === "session_add" ? "Adding to session" : "Extracting";
-    notify("Send to Claude — starting", `${verb}: ${shortUrl(job.url)}...`);
+    const verb = job.kind === "session_add" ? "Adding to session" : "Yoinking";
+    notify("Yoink — starting", `${verb}: ${shortUrl(job.url)}...`);
   }
   drain();
 }
 
 async function clearQueue() {
   await setState({ queue: [] });
-  notify("Send to Claude", "Queue cleared.");
+  notify("Yoink", "Queue cleared.");
 }
 
 async function restoreQueue() {
@@ -322,8 +339,8 @@ async function drain() {
       try {
         await runJob(job);
       } catch (e) {
-        console.error("[stc] job crashed", e);
-        notify("Send to Claude — failed", String(e));
+        console.error("[Yoink] job crashed", e);
+        notify("Yoink failed", String(e));
       }
     }
   } finally {
@@ -341,26 +358,31 @@ async function runExtractJob(job) {
   try {
     data = await STC.postExtract(job.url, job.interval);
   } catch (e) {
-    console.error("[stc] server unreachable", e);
-    notify("Send to Claude — server offline",
-           `Couldn't reach ${STC.SERVER}. Run start_server.bat in the yoink folder.`);
+    console.error("[Yoink] server unreachable", e);
+    notify("Yoink server is offline",
+           "Start Yoink from your system tray, or run start_server.bat from the install folder.");
     return;
   }
   if (!data || !data.ok) {
-    notify("Send to Claude — failed", (data && data.error) || "Unknown server error.");
+    notify("Yoink failed", (data && data.error) || "Yoink hit an unknown error.");
     return;
   }
 
   await setState({ current: { ...job, startedAt: Date.now(), title: data.title || null } });
 
-  const copied = await copyToClipboard(data.combined_md);
+  const copied = await copyToClipboard(data.yoink_md);
   await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
 
-  const shotsLine = `${data.screenshot_count} screenshots saved.`;
-  const clipLine = copied
-    ? "Transcript copied. Paste with Ctrl+V in the new tab."
-    : "Transcript NOT copied (clipboard blocked). Open combined.md in the folder.";
-  notify("Ready in Claude", `${clipLine} Screenshots folder is open in Explorer. ${shotsLine}`);
+  // Lead with the topic so the user spots Uncategorized landings; suppress
+  // the "Saved to: ..." line entirely when the topic is missing or
+  // Uncategorized so the notification doesn't read awkwardly.
+  const realTopic = data.topic && data.topic !== "Uncategorized" ? data.topic : null;
+  const topicLine = realTopic ? `Saved to: ${realTopic}. ` : "";
+  const tail = "Comments will appear in yoink.md when ready.";
+  const message = copied
+    ? `${topicLine}Paste with Ctrl+V in Claude or ChatGPT. ${tail}`.trim()
+    : `${topicLine}Clipboard was blocked — open yoink.md in the folder.`.trim();
+  notify("Yoinked!", message);
 }
 
 async function runSessionAddJob(job) {
@@ -368,13 +390,13 @@ async function runSessionAddJob(job) {
   try {
     data = await STC.addToSession(job.session_id, job.url, job.interval);
   } catch (e) {
-    console.error("[stc] server unreachable", e);
-    notify("Send to Claude — server offline",
-           `Couldn't reach ${STC.SERVER}. Run start_server.bat in the yoink folder.`);
+    console.error("[Yoink] server unreachable", e);
+    notify("Yoink server is offline",
+           "Start Yoink from your system tray, or run start_server.bat from the install folder.");
     return;
   }
   if (!data || !data.ok) {
-    notify("Send to Claude — failed", (data && data.error) || "Unknown server error.");
+    notify("Yoink failed", (data && data.error) || "Yoink hit an unknown error.");
     return;
   }
 
