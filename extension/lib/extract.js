@@ -38,11 +38,17 @@
   }
   async function _fetchFreshToken() {
     try {
+      // X-Yoink-Client is the gate header on /token. Random websites
+      // can't set custom headers cross-origin without a CORS preflight,
+      // which our server only ACAO-echoes for the extension/youtube
+      // allowlist -- so a drive-by attacker is blocked at the browser
+      // before this header even reaches the server.
       const res = await fetch(`${SERVER}/token`, {
         method: "GET",
         mode: "cors",
         credentials: "omit",
         cache: "no-store",
+        headers: { "X-Yoink-Client": "yoink-extension" },
       });
       if (!res.ok) return null;
       const data = await res.json();
@@ -342,5 +348,6 @@
     listRecent,
     openFolder,
     buildYoinkedMessage,
+    getToken,
   };
 })(typeof self !== "undefined" ? self : globalThis);

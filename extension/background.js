@@ -39,6 +39,14 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   syncThemeIcon().catch((e) => console.warn("[stc] theme sync failed", e));
   restoreQueue().catch((e) => console.warn("[stc] restore failed", e));
 
+  // Eager auth-token prefetch. Without this, the user's first authed
+  // request blocks on a /token round-trip, and a transient failure there
+  // surfaces as "missing or invalid token" before the lazy refetch kicks
+  // in. Doing it on install/update means the token is in
+  // chrome.storage.local before the user clicks anything.
+  STC.getToken({ refresh: true }).catch((e) =>
+    console.warn("[stc] token prefetch failed", e));
+
   // Fresh install only. Note: Chrome fires onInstalled with reason="install"
   // every time an *unpacked* extension is reloaded from chrome://extensions/,
   // not just on a true first install. Gate on a persistent flag instead of

@@ -23,7 +23,13 @@ Endpoints fall into three groups:
 
 1. **Public probes** -- no auth, no Origin check. `/health` and `/ping` return `{"ok": true, "version": "..."}`. The popup, in-page YouTube button, and `setup.html` use these for the live status indicator. If a malicious site probes them they learn the server is running, which is not a meaningful secret.
 
-2. **Token issuance** -- `/token` returns the token. Gated by an `Origin` check that requires `chrome-extension://*`. Browsers refuse to let webpages forge `Origin`, so this defends against CSRF: only an actual extension running in the user's browser can fetch the token.
+2. **Token issuance** -- `/token` returns the token. Gated by three checks layered together:
+
+   - **`X-Yoink-Client: yoink-extension` header.** A webpage cannot set custom request headers cross-origin without triggering a CORS preflight, and the preflight only echoes `Access-Control-Allow-Origin` for our allowlist (extensions + youtube.com). A malicious site's preflight gets no ACAO match, so the browser blocks the actual GET before it ever runs. This is the load-bearing CSRF defense.
+   - **Origin allowlist** -- if `Origin` is present, it must start with `chrome-extension://` or `moz-extension://`. *No* `Origin` header is also accepted: some Chromium forks (Comet, observed in v1 testing) issue same-process service-worker fetches with no `Origin` at all, and the strict allowlist locks them out for no security gain (the `X-Yoink-Client` gate above is what stops the real attacker).
+   - **Rate limit** -- 10 requests / 60 seconds, server-wide. The legitimate caller (the extension) fetches `/token` once on install plus the rare 403-retry, so this is loose for normal use and tight for an attacker grinding through tokens. Excess requests get 429.
+
+   The historical strict-Origin-only gate was tightened against a threat (CSRF from a webpage) that the browser's CORS preflight already blocks via the `X-Yoink-Client` mechanism above, while breaking real users on Chromium forks that ship slightly different SW behavior. The relaxed gate is more permissive on paper but functionally equivalent against the actual attack model.
 
 3. **Everything else** -- `/extract`, `/recent`, `/session/*`, `/open-prompts`, `/open-index`, `/open-folder`. All require the `X-Yoink-Token` header (or `?token=...` query param). Mismatch -> 403 with no further info. We use `secrets.compare_digest` for the comparison so a timing attack can't recover the token byte-by-byte.
 
@@ -36,7 +42,7 @@ Endpoints respond with:
 ```
 Access-Control-Allow-Origin: <echoed origin if in allowlist>
 Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Content-Type, X-Yoink-Token
+Access-Control-Allow-Headers: Content-Type, X-Yoink-Token, X-Yoink-Client
 Access-Control-Allow-Private-Network: true
 ```
 

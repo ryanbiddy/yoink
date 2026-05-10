@@ -100,6 +100,31 @@ def _load_or_create_token() -> str:
 
 TOKEN = _load_or_create_token()
 
+# /token rate limit -- defends the relaxed Origin gate. The legitimate
+# caller (the extension) fetches /token once per install plus the rare 403
+# retry, so 10/min is comfortable for real use and tight enough that a
+# noisy script can't grind through tokens hunting for racing conditions.
+_TOKEN_RATE_LIMIT = 10
+_TOKEN_RATE_WINDOW_SEC = 60.0
+_token_request_times: list[float] = []
+_token_rate_lock = threading.Lock()
+_YOINK_CLIENT_HEADER_VALUE = "yoink-extension"
+
+
+def _check_token_rate_limit() -> bool:
+    import time
+    now = time.monotonic()
+    with _token_rate_lock:
+        # Drop stale entries (older than the window) and decide.
+        cutoff = now - _TOKEN_RATE_WINDOW_SEC
+        kept = [t for t in _token_request_times if t > cutoff]
+        if len(kept) >= _TOKEN_RATE_LIMIT:
+            _token_request_times[:] = kept
+            return False
+        kept.append(now)
+        _token_request_times[:] = kept
+    return True
+
 # Invoke yt-dlp via the same interpreter rather than relying on PATH. pip's
 # --user install puts yt-dlp.exe in %APPDATA%\Python\PythonXX\Scripts which
 # isn't on PATH by default on Windows, so a bare "yt-dlp" call fails.
@@ -1278,9 +1303,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             # X-Yoink-Token is the auth header the extension sends on every
-            # mutating request. Browsers won't send it without the OPTIONS
-            # preflight allowing it explicitly.
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Yoink-Token")
+            # mutating request. X-Yoink-Client is the /token gate header.
+            # Browsers won't send custom headers without the OPTIONS
+            # preflight allowing them explicitly.
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, X-Yoink-Token, X-Yoink-Client")
             self.send_header("Access-Control-Max-Age", "600")
             # Private Network Access: Chrome requires this header when a public
             # HTTPS origin (youtube.com) fetches a loopback resource. Without
@@ -1305,7 +1332,26 @@ class Handler(BaseHTTPRequestHandler):
         return secrets.compare_digest(self._request_token(), TOKEN)
 
     def _is_extension_origin(self) -> bool:
-        return (self.headers.get("Origin", "") or "").startswith("chrome-extension://")
+        """True if Origin looks like a browser extension OR is absent.
+        Some Chromium forks (Comet, observed in v1 testing) issue
+        same-process service-worker fetches with no Origin header at all,
+        so a strict allowlist locks them out. Browser-side CSRF defense
+        moves to the X-Yoink-Client header gate + the existing CORS ACAO
+        allowlist; see docs/security.md."""
+        origin = (self.headers.get("Origin", "") or "")
+        if not origin:
+            return True
+        return (origin.startswith("chrome-extension://")
+                or origin.startswith("moz-extension://"))
+
+    def _has_yoink_client_header(self) -> bool:
+        """Defense-in-depth header that the extension sets on /token. A
+        webpage can't set custom request headers cross-origin without
+        triggering a CORS preflight, and our preflight only echoes ACAO
+        for chrome-extension://* + the YouTube allowlist -- so the actual
+        request from a malicious origin is blocked by the browser before
+        it even runs the GET."""
+        return self.headers.get("X-Yoink-Client", "").strip() == _YOINK_CLIENT_HEADER_VALUE
 
     def _require_token(self) -> bool:
         """Returns True if request authenticates. Otherwise sends a 403 and
@@ -1401,17 +1447,31 @@ class Handler(BaseHTTPRequestHandler):
         log.info("GET %s -> 404", self.path)
         self._send_json(404, {"ok": False, "error": "not found"})
 
-    # ---- /token (chrome-extension origin only) ----
-    # Returns the per-install auth token. Gated by Origin so a non-extension
-    # origin (a webpage attempting CSRF) can't grab it -- browsers refuse to
-    # let pages forge Origin. Local processes (curl, malicious scripts) CAN
-    # forge it, but they already run with the user's privileges and could
-    # read token.txt directly. The Origin gate's job is CSRF defense, not
+    # ---- /token ----
+    # Returns the per-install auth token. CSRF defense layered as:
+    #   1. X-Yoink-Client header must equal "yoink-extension". A drive-by
+    #      browser request from a random site can't set this without a
+    #      CORS preflight, and our preflight refuses ACAO for any origin
+    #      outside the youtube + chrome-extension allowlist.
+    #   2. Origin (if present) must be a browser-extension origin.
+    #      Absent Origin is allowed -- some Chromium forks (Comet) issue
+    #      service-worker fetches with no Origin header.
+    #   3. Per-install rate limit (10/min) so a noisy attacker can't
+    #      poll the endpoint indefinitely.
+    # Local processes (curl, malicious scripts on the same machine) CAN
+    # bypass all of this; they already run with the user's privileges and
+    # could read token.txt directly. The gate exists for CSRF, not for
     # local-attacker defense.
     def _handle_token(self):
+        if not self._has_yoink_client_header():
+            log.info("GET /token rejected (missing X-Yoink-Client)")
+            return self._send_json(403, {"ok": False, "error": "forbidden"})
         if not self._is_extension_origin():
             log.info("GET /token rejected (origin=%r)", self.headers.get("Origin"))
             return self._send_json(403, {"ok": False, "error": "forbidden"})
+        if not _check_token_rate_limit():
+            log.info("GET /token rate-limited")
+            return self._send_json(429, {"ok": False, "error": "too many requests"})
         self._send_json(200, {"ok": True, "token": TOKEN})
 
     # ---- /recent ----
