@@ -48,6 +48,10 @@ $FFMPEG_VERSION = '7.1'
 $FFMPEG_URL     = "https://github.com/GyanD/codexffmpeg/releases/download/$FFMPEG_VERSION/ffmpeg-$FFMPEG_VERSION-essentials_build.zip"
 # yt-dlp pip pin -- bump after compatibility-testing a new release.
 $YTDLP_VERSION  = '2026.03.17'
+# Pillow is used for the multimodal paste-corpus generator (resize +
+# JPEG-recompress + base64-encode the embedded screenshots). Pinned to
+# a recent stable; bump at release-prep time after testing.
+$PILLOW_VERSION = '10.4.0'
 
 # ---- Hash verification --------------------------------------------------
 # Lock in known-good SHA256s so a compromised mirror or silent upstream
@@ -166,13 +170,16 @@ $embedPython = "$StagingDir\python\python.exe"
 & $embedPython $getPipPy --no-warn-script-location
 if ($LASTEXITCODE -ne 0) { throw 'pip bootstrap failed' }
 
-# 2d. Install yt-dlp at a pinned version. Pip's hash-locking would require
-#     a requirements file with --require-hashes; for v1 we accept the
-#     trust-pip-itself model since the version pin is the load-bearing part
-#     (a compromised release on PyPI affects everyone, not just us).
-Write-Host "    installing yt-dlp==$YTDLP_VERSION..."
-& $embedPython -m pip install --no-warn-script-location --no-compile "yt-dlp==$YTDLP_VERSION"
-if ($LASTEXITCODE -ne 0) { throw 'pip install yt-dlp failed' }
+# 2d. Install yt-dlp + Pillow at pinned versions. Pip's hash-locking would
+#     require a requirements file with --require-hashes; for v1 we accept
+#     the trust-pip-itself model since the version pins are the
+#     load-bearing part (a compromised release on PyPI affects everyone,
+#     not just us). Pillow drives the multimodal paste-corpus generator
+#     (resize / re-encode / base64 screenshots for clipboard embedding).
+Write-Host "    installing yt-dlp==$YTDLP_VERSION + Pillow==$PILLOW_VERSION..."
+& $embedPython -m pip install --no-warn-script-location --no-compile `
+    "yt-dlp==$YTDLP_VERSION" "Pillow==$PILLOW_VERSION"
+if ($LASTEXITCODE -ne 0) { throw 'pip install (yt-dlp + Pillow) failed' }
 
 # 2e. Trim dev-only and build-time files we don't need at runtime.
 # distutils-precedence.pth is dropped by setuptools and tries to import

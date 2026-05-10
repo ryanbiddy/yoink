@@ -694,7 +694,8 @@ def _build_yoink_md(metadata: dict, url: str, entries: list, shots: list,
 def _run_extraction(url: str, interval: int, output_folder: Path,
                     *, open_explorer: bool = True,
                     metadata: dict | None = None,
-                    topic: str | None = None) -> dict:
+                    topic: str | None = None,
+                    generate_paste: bool = True) -> dict:
     """Yoink a single video into output_folder.
 
     Steps:
@@ -880,6 +881,18 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     # user manually deleted simply drops out of the index next time.
     _regenerate_index()
 
+    # Build the clipboard / paste version once we know the on-disk md is
+    # final. Session adds skip this -- the session corpus is built at
+    # /session/close time, so the per-video paste version would be unused
+    # bytes shipped over the chrome.runtime message.
+    paste_md: str | None = None
+    if generate_paste:
+        try:
+            paste_md = _generate_paste_corpus(output_folder)
+        except Exception as e:
+            log.warning("paste corpus generation failed: %s", e)
+            paste_md = None
+
     # Comments fetch in background; updates the corpus file when done.
     _start_comments_thread(url, output_folder, yoink_path)
 
@@ -893,6 +906,11 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
         "ok": True,
         "folder": str(output_folder),
         "yoink_md": yoink_md,
+        # Multimodal clipboard version: same content as yoink_md but with
+        # screenshots inlined as base64 data URIs. Extension prefers this
+        # over yoink_md when copying to the clipboard. None on session adds
+        # or when generation fails -- caller falls back to yoink_md.
+        "corpus_md_paste": paste_md,
         "screenshot_count": len(shots),
         "title": title,
         "video_slug": video_slug,
@@ -1018,6 +1036,141 @@ def _resolve_corpus_path(folder: Path) -> Path | None:
     if legacy.exists():
         return legacy
     return None
+
+
+# ---- Multimodal paste corpus (clipboard version) -------------------------
+# The on-disk <slug>.md keeps local image refs (screenshots/shot_NNNN.jpg)
+# so VS Code preview / Obsidian render the file straight from the folder.
+# The CLIPBOARD version inlines a curated subset of screenshots as base64
+# data URIs so a single Ctrl+V into Claude or ChatGPT delivers transcript +
+# images without the user having to re-upload anything.
+#
+# These constants are also surfaced (read-only for v1) in extension/config.js
+# under YOINK_CONFIG.pasteCorpus -- if you change them here, mirror them
+# there so the documented client surface stays accurate.
+PASTE_MAX_SCREENSHOTS = 12
+PASTE_SCREENSHOT_WIDTH = 800
+PASTE_SCREENSHOT_QUALITY = 80
+PASTE_SIZE_WARN_MB = 4
+
+_SCREENSHOT_BLOCK_RE = re.compile(
+    r"### \[([^\]]+)\]\n\n!\[Screenshot at [^\]]+\]\(screenshots/(shot_\d+\.jpg)\)\n",
+)
+
+
+def _select_paste_indices(n: int, target: int) -> list[int]:
+    """Pick `target` evenly-distributed indices from [0, n). Always includes
+    0 and n-1 (linear interpolation lands on those endpoints exactly).
+    Returns sorted unique indices, so a small `n` may produce fewer than
+    target points after rounding collisions are deduped."""
+    if n <= target:
+        return list(range(n))
+    return sorted({round(i * (n - 1) / (target - 1)) for i in range(target)})
+
+
+def _encode_screenshot_b64(path: Path, *, max_width: int, quality: int) -> str:
+    """Resize + JPEG-recompress + base64 a screenshot for clipboard
+    embedding. Imports Pillow lazily so the rest of server.py keeps
+    working in dev environments where Pillow isn't installed (the
+    bundled installer always ships it)."""
+    from PIL import Image  # type: ignore[import-not-found]
+    import base64
+    import io
+    img = Image.open(path)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    if img.width > max_width:
+        new_h = max(1, int(img.height * (max_width / img.width)))
+        img = img.resize((max_width, new_h), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _paste_header(size_mb: float) -> str:
+    """Lead-in for the clipboard corpus. The blockquote shape lets it
+    survive paste into Claude / ChatGPT without breaking the surrounding
+    transcript markup."""
+    lines = [
+        "> This corpus includes embedded images. When pasted into Claude or",
+        "> ChatGPT, the AI sees both the transcript text and the screenshots",
+        "> inline.",
+    ]
+    if size_mb > PASTE_SIZE_WARN_MB:
+        lines.append(">")
+        lines.append(
+            f"> Note: This corpus is large ({size_mb:.1f} MB). If pasting"
+            " into the AI fails, open the .md file directly and paste"
+            " manually."
+        )
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _generate_paste_corpus(folder: Path) -> str:
+    """Build the clipboard version of the corpus from <folder>/<slug>.md.
+
+    Replaces local image refs (`screenshots/shot_NNNN.jpg`) with base64
+    data URIs for up to PASTE_MAX_SCREENSHOTS evenly-distributed shots.
+    Drops the rest of the per-shot blocks (so the markdown stays readable
+    instead of silently shrinking only some images).
+
+    Returns the empty string if the corpus file isn't found, falls back
+    to the unmodified file content when Pillow isn't installed (dev mode
+    without the bundled distribution)."""
+    corpus_path = _resolve_corpus_path(folder)
+    if corpus_path is None:
+        return ""
+    md = corpus_path.read_text(encoding="utf-8")
+
+    try:
+        from PIL import Image  # noqa: F401  -- import probe
+    except ImportError:
+        log.warning(
+            "Pillow not installed; clipboard corpus will keep local image"
+            " references. Install Pillow or rebuild via the installer."
+        )
+        return md
+
+    matches = list(_SCREENSHOT_BLOCK_RE.finditer(md))
+    if not matches:
+        # No screenshots to embed -- still prepend the header so the user
+        # can tell the clipboard version was generated. Size is just the
+        # md length.
+        size_mb = len(md.encode("utf-8")) / (1024 * 1024)
+        return _paste_header(size_mb) + md
+
+    selected = set(_select_paste_indices(len(matches), PASTE_MAX_SCREENSHOTS))
+
+    # Counter-aware substitution: we need the index of each match to know
+    # whether it's in the selected set, but re.sub doesn't pass an index.
+    counter = {"i": 0}
+
+    def replacer(m: re.Match) -> str:
+        idx = counter["i"]
+        counter["i"] += 1
+        if idx not in selected:
+            return ""  # drop this block entirely
+        ts = m.group(1)
+        shot_name = m.group(2)
+        try:
+            b64 = _encode_screenshot_b64(
+                folder / "screenshots" / shot_name,
+                max_width=PASTE_SCREENSHOT_WIDTH,
+                quality=PASTE_SCREENSHOT_QUALITY,
+            )
+        except (OSError, ValueError) as e:
+            log.warning("paste: failed to encode %s: %s", shot_name, e)
+            return m.group(0)  # leave the original block on encode failure
+        return (
+            f"### [{ts}]\n\n"
+            f"![Screenshot at {ts}](data:image/jpeg;base64,{b64})\n"
+        )
+
+    paste_md = _SCREENSHOT_BLOCK_RE.sub(replacer, md)
+    size_mb = len(paste_md.encode("utf-8")) / (1024 * 1024)
+    return _paste_header(size_mb) + paste_md
 
 
 def _scan_yoinks() -> list[dict]:
@@ -1736,9 +1889,14 @@ class Handler(BaseHTTPRequestHandler):
                     video_slug = f"{video_slug}_{uuid.uuid4().hex[:6]}"
                     target = sess_folder / video_slug
 
+                # Session adds don't go to the clipboard one-by-one (the
+                # whole session is concatenated and copied at /session/close),
+                # so skip the per-video paste-corpus generation -- it would
+                # just inflate the runtime message payload for nothing.
                 result = _run_extraction(url, interval, target,
                                           open_explorer=False,
-                                          metadata=metadata, topic=topic)
+                                          metadata=metadata, topic=topic,
+                                          generate_paste=False)
             except BaseException as e:
                 msg = friendly_error(e)
                 log.error("POST /session/add -> error: %s", msg)

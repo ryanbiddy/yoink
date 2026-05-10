@@ -498,7 +498,12 @@ async function runExtractJob(job) {
 
   await setState({ current: { ...job, startedAt: Date.now(), title: data.title || null } });
 
-  const copied = await copyToClipboard(data.yoink_md);
+  // Prefer the multimodal paste version (transcript + base64-embedded
+  // screenshots) so a single Ctrl+V into Claude/ChatGPT delivers both.
+  // Fall back to the file version if the server didn't generate one
+  // (Pillow missing in dev, generation failure, etc).
+  const clipboardText = data.corpus_md_paste || data.yoink_md;
+  const copied = await copyToClipboard(clipboardText);
   await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
 
   // Shared helper handles first-yoink-vs-subsequent copy + atomically marks

@@ -338,15 +338,20 @@
       return;
     }
 
+    // Prefer the multimodal paste version (transcript + base64-embedded
+    // screenshots) so a single Ctrl+V delivers both into Claude/ChatGPT.
+    // The file version (yoink_md) is the dev-mode fallback when Pillow
+    // wasn't bundled or paste generation failed.
+    const clipboardText = data.corpus_md_paste || data.yoink_md;
     let copied = false;
     try {
-      await navigator.clipboard.writeText(data.yoink_md);
+      await navigator.clipboard.writeText(clipboardText);
       copied = true;
     } catch (e) {
       console.warn("[Yoink] clipboard API failed, falling back", e);
       try {
         const ta = document.createElement("textarea");
-        ta.value = data.yoink_md;
+        ta.value = clipboardText;
         ta.style.position = "fixed";
         ta.style.left = "-9999px";
         document.body.appendChild(ta);

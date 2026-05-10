@@ -81,6 +81,7 @@ All three are cached under `build\cache\` after the first download. Delete the c
 | Python embeddable | 3.11.9 (amd64) | locked in `build.ps1` | Acceptance: 3.11.9 is the last 3.11.x with binary installers from python.org. Later 3.11.x are source-only security releases that we'd have to build ourselves. v1 ships 3.11.9 knowing the gap; v1.5 plan: move to the latest 3.12 embeddable. |
 | ffmpeg | 7.1 essentials build | locked in `build.ps1` | Pulled from `github.com/GyanD/codexffmpeg/releases` (gyan.dev's GitHub mirror) for stable URLs. |
 | yt-dlp | 2026.03.17 | (pip) | Pinned via `pip install yt-dlp==2026.03.17`. Bump after compatibility-testing a new release. |
+| Pillow | 10.4.0 | (pip) | Drives the multimodal paste-corpus generator (resize + JPEG-recompress + base64-encode screenshots for clipboard embedding). Pinned via `pip install Pillow==10.4.0`. |
 
 The `Confirm-Hash` helper in `build.ps1` verifies SHA256 for the directly-downloaded artifacts (Python embeddable + ffmpeg + get-pip.py). To bootstrap on first run the `$..._SHA256` constants are empty; the build prints the computed hash with a warning, you paste it in, commit, and subsequent builds verify. A mismatch on any artifact deletes the cached file and fails the build, so a compromised mirror or silent upstream change can't slip through.
 
