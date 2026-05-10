@@ -39,15 +39,23 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   syncThemeIcon().catch((e) => console.warn("[stc] theme sync failed", e));
   restoreQueue().catch((e) => console.warn("[stc] restore failed", e));
 
-  // Fresh install only — not updates, not Chrome upgrades, not browser-wide
-  // shared module installs. Open the guided setup so first-time users land
-  // on the install/verify flow instead of an empty popup.
+  // Fresh install only. Note: Chrome fires onInstalled with reason="install"
+  // every time an *unpacked* extension is reloaded from chrome://extensions/,
+  // not just on a true first install. Gate on a persistent flag instead of
+  // trusting reason alone, otherwise every dev reload spawns a new setup
+  // tab and the user thinks toolbar clicks are accumulating tabs.
   if (details && details.reason === "install") {
     try {
-      await chrome.tabs.create({
-        url: chrome.runtime.getURL("setup.html?source=install"),
-        active: true,
+      const { setup_seen_at = null } = await chrome.storage.local.get({
+        setup_seen_at: null,
       });
+      if (!setup_seen_at) {
+        await chrome.storage.local.set({ setup_seen_at: Date.now() });
+        await chrome.tabs.create({
+          url: chrome.runtime.getURL("setup.html?source=install"),
+          active: true,
+        });
+      }
     } catch (e) {
       console.warn("[stc] setup open failed", e);
     }
@@ -223,24 +231,6 @@ function tryOpenPopup() {
       }
     }
   } catch { /* ignore */ }
-}
-
-// ---- Setup tab (offline) -------------------------------------------------
-// Throttle so a queue of context-menu jobs failing in sequence doesn't spawn
-// a stack of setup tabs.
-let _lastSetupOpenTs = 0;
-async function openSetupOffline() {
-  const now = Date.now();
-  if (now - _lastSetupOpenTs < 8000) return;
-  _lastSetupOpenTs = now;
-  try {
-    await chrome.tabs.create({
-      url: chrome.runtime.getURL("setup.html?source=offline"),
-      active: true,
-    });
-  } catch (e) {
-    console.warn("[stc] openSetupOffline failed", e);
-  }
 }
 
 // ---- Notifications -------------------------------------------------------
@@ -453,8 +443,12 @@ async function runExtractJob(job) {
     data = await STC.postExtract(job.url, job.interval);
   } catch (e) {
     console.error("[Yoink] server unreachable", e);
-    notify("Yoink isn't running yet", "Opening setup guide...");
-    openSetupOffline();
+    // No tab open here -- setup.html only opens from direct user actions
+    // (the in-page YouTube button or the popup help link), never from
+    // background-queued jobs. Keeps unrelated context-menu work from
+    // surprising the user with new tabs.
+    notify("Yoink isn't running yet",
+           "Start the Yoink helper from the Start Menu, then try again.");
     return;
   }
   if (!data || !data.ok) {
@@ -500,8 +494,8 @@ async function runSessionAddJob(job) {
     data = await STC.addToSession(job.session_id, job.url, job.interval);
   } catch (e) {
     console.error("[Yoink] server unreachable", e);
-    notify("Yoink isn't running yet", "Opening setup guide...");
-    openSetupOffline();
+    notify("Yoink isn't running yet",
+           "Start the Yoink helper from the Start Menu, then try again.");
     return;
   }
   if (!data || !data.ok) {

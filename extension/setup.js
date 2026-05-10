@@ -75,12 +75,33 @@ function applySource() {
     // Skip the welcome + install steps; user already has the extension.
     step1.classList.add("hidden");
     step2.classList.add("hidden");
-    pageTitle.textContent = "Yoink isn't running yet.";
-    pageLede.textContent =
-      "Start the Yoink helper and this page will detect it automatically.";
     markCurrent(step3);
   } else {
     markCurrent(step1);
+  }
+  // Header copy is driven by current status, not just source. Initial state
+  // is "checking" -- updateHeader gets called again on every status change.
+  updateHeader("checking");
+}
+
+// Keep page title/lede in sync with the live status. Without this, the
+// source=offline path stayed on "Yoink isn't running yet" even after the
+// status block flipped green, so the page contradicted itself.
+function updateHeader(status) {
+  if (status === "running") {
+    pageTitle.textContent = "Yoink is ready.";
+    pageLede.textContent =
+      "The local helper is running. Yoink any YouTube video to begin.";
+    return;
+  }
+  if (source === "offline") {
+    pageTitle.textContent = "Yoink isn't running yet.";
+    pageLede.textContent =
+      "Start the Yoink helper and this page will detect it automatically.";
+  } else {
+    pageTitle.textContent = "Let's get you set up.";
+    pageLede.textContent =
+      "Two minutes. Then you'll be yoinking videos straight into Claude.";
   }
 }
 
@@ -149,6 +170,7 @@ async function tickPoll() {
   if (statusBlock.classList.contains("is-checking")) {
     setStatus("down", "Yoink isn't running yet");
     statusInstructions.classList.remove("hidden");
+    updateHeader("down");
   }
 }
 
@@ -174,6 +196,7 @@ function onServerUp() {
   stopPolling();
   setStatus("running", "Yoink is running ✓");
   statusInstructions.classList.add("hidden");
+  updateHeader("running");
   markDone(step3);
   if (step4.classList.contains("hidden")) {
     step4.classList.remove("hidden");
