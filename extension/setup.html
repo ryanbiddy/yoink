@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up Yoink</title>
+  <style>
+    :root {
+      --yoink-accent: #EA580C;
+      --yoink-accent-soft: rgba(234, 88, 12, 0.15);
+      --yoink-black: #0A0A0A;
+      --yoink-white: #FFFFFF;
+      --bg-card: #161616;
+      --bg-inset: #0f0f0f;
+      --border: #2a2a2a;
+      --border-soft: #232323;
+      --text-dim: #b8b8b8;
+      --text-mute: #888;
+      --ok: #57d983;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--yoink-black);
+      color: var(--yoink-white);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    .brand img {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      background: var(--yoink-accent);
+    }
+    .brand-name {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    h1 {
+      font-size: 30px;
+      margin: 0 0 10px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .lede {
+      font-size: 16px;
+      color: var(--text-dim);
+      margin: 0 0 28px;
+    }
+    .step {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 18px;
+      scroll-margin-top: 24px;
+    }
+    .step.is-current { border-color: var(--yoink-accent); box-shadow: 0 0 0 3px var(--yoink-accent-soft); }
+    .step-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .step-num {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      border-radius: 50%;
+      background: var(--border);
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .step.is-current .step-num,
+    .step.is-done .step-num { background: var(--yoink-accent); color: var(--yoink-black); }
+    .step.is-done .step-num::before { content: "✓"; }
+    .step.is-done .step-num-text { display: none; }
+    h2 {
+      font-size: 18px;
+      margin: 0;
+      font-weight: 600;
+    }
+    .step p { margin: 0 0 14px; color: #cfcfcf; }
+    .step p.sub { color: var(--text-mute); font-size: 13px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--yoink-accent);
+      color: var(--yoink-black);
+      font-weight: 700;
+      font-size: 14px;
+      padding: 11px 20px;
+      border-radius: 7px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .button:hover { filter: brightness(1.08); }
+    .button:focus-visible { outline: 2px solid var(--yoink-white); outline-offset: 2px; }
+    .button.ghost {
+      background: transparent;
+      color: var(--yoink-white);
+      border: 1px solid #3a3a3a;
+      font-weight: 500;
+    }
+    .button.ghost:hover { background: #1a1a1a; }
+    .button.disabled,
+    .button[disabled] { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+    .button-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 6px;
+    }
+    .skip-link {
+      color: var(--text-mute);
+      font-size: 13px;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .skip-link:hover { color: var(--text-dim); text-decoration: underline; }
+    .platform-note { color: var(--text-mute); font-size: 12px; }
+
+    /* Installer mockup */
+    .installer-mock {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 16px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 16px 0;
+    }
+    .installer-mock .icon {
+      width: 56px;
+      height: 56px;
+      flex-shrink: 0;
+      background: linear-gradient(135deg, var(--yoink-accent), #c2410c);
+      border-radius: 10px;
+      color: var(--yoink-white);
+      font-weight: 800;
+      font-size: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(234,88,12,0.25);
+    }
+    .installer-mock .filename {
+      font-family: "SF Mono", "Consolas", monospace;
+      font-size: 13px;
+      color: var(--yoink-white);
+    }
+    .installer-mock .caption {
+      color: var(--text-mute);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    /* Status block */
+    .status-block {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 12px 0 16px;
+    }
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--text-mute);
+    }
+    .status-block.is-checking .status-dot {
+      background: var(--text-mute);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .status-block.is-running .status-dot {
+      background: var(--ok);
+      box-shadow: 0 0 8px rgba(87,217,131,0.6);
+    }
+    .status-block.is-down .status-dot {
+      background: var(--warn);
+      box-shadow: 0 0 8px rgba(245,158,11,0.6);
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    .status-text { font-size: 14px; font-weight: 600; }
+    .status-block.is-running .status-text { color: var(--ok); }
+    .status-block.is-down .status-text { color: var(--warn); }
+
+    /* Start menu mockup */
+    .startmenu-mock {
+      max-width: 320px;
+      background: #1c1c1c;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin: 14px 0 0;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    .startmenu-mock .search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      background: #0f0f0f;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: var(--yoink-white);
+    }
+    .startmenu-mock .search-icon { color: var(--text-mute); }
+    .startmenu-mock .search-text {
+      flex: 1;
+      color: var(--yoink-white);
+    }
+    .startmenu-mock .result {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+    .startmenu-mock .result.highlight {
+      background: var(--yoink-accent-soft);
+      color: var(--yoink-white);
+      border-left: 3px solid var(--yoink-accent);
+      padding-left: 7px;
+    }
+    .startmenu-mock .result-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      background: var(--yoink-accent);
+      color: var(--yoink-black);
+      font-weight: 800;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .startmenu-caption {
+      color: var(--text-mute);
+      font-size: 11px;
+      margin: 8px 0 0;
+      text-align: center;
+    }
+
+    .instructions {
+      margin: 14px 0 0;
+      padding-left: 22px;
+      color: #cfcfcf;
+    }
+    .instructions li { margin-bottom: 6px; }
+    .instructions code {
+      background: #2a2a2a;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+
+    /* Step 4 video */
+    .video-card {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      margin: 14px 0 16px;
+      padding: 14px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .video-thumb {
+      width: 180px;
+      aspect-ratio: 16 / 9;
+      flex-shrink: 0;
+      border-radius: 6px;
+      object-fit: cover;
+      background: #2a2a2a;
+    }
+    .video-meta { flex: 1; min-width: 0; }
+    .video-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--yoink-white);
+      margin-bottom: 4px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .video-byline {
+      font-size: 12px;
+      color: var(--text-mute);
+      margin-bottom: 12px;
+    }
+
+    .footer {
+      margin-top: 36px;
+      font-size: 12px;
+      color: var(--text-mute);
+      text-align: center;
+    }
+    .footer a { color: var(--yoink-accent); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+
+    .hidden { display: none !important; }
+
+    /* Mobile */
+    @media (max-width: 560px) {
+      .wrap { padding: 32px 16px 48px; }
+      h1 { font-size: 24px; }
+      .step { padding: 18px; }
+      .video-card { flex-direction: column; }
+      .video-thumb { width: 100%; }
+      .button-row { width: 100%; }
+      .button-row > .button { flex: 1; justify-content: center; }
+      .startmenu-mock { max-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <img src="icons/icon-128-light.png" alt="Yoink">
+      <div class="brand-name">Yoink</div>
+    </div>
+
+    <h1 id="page-title">Let's get you set up.</h1>
+    <p class="lede" id="page-lede">Two minutes. Then you'll be yoinking videos straight into Claude.</p>
+
+    <!-- Step 1: Welcome (install path only) -->
+    <section id="step-1" class="step">
+      <div class="step-head">
+        <div class="step-num"><span class="step-num-text">1</span></div>
+        <h2>What is Yoink?</h2>
+      </div>
+      <p>Yoink turns YouTube videos into structured input for Claude or ChatGPT — full transcript, screenshots at any interval, comments, and channel context, packaged into one paste-ready document.</p>
+      <p class="sub">Skip the "summarize this for me" routine. Hand the model the whole video and ask it anything.</p>
+      <div class="button-row">
+        <button id="get-started-btn" class="button" type="button">Get started →</button>
+      </div>
+    </section>
+
+    <!-- Step 2: Install the helper -->
+    <section id="step-2" class="step">
+      <div class="step-head">
+        <div class="step-num"><span class="step-num-text">2</span></div>
+        <h2>Install the Yoink helper</h2>
+      </div>
+      <p>Yoink runs a tiny program on your computer that does the heavy lifting locally — that's why your data stays private. Nothing leaves your machine except the YouTube transcript request.</p>
+
+      <div class="installer-mock" aria-hidden="true">
+        <div class="icon">Y</div>
+        <div>
+          <div class="filename">YoinkSetup-1.0.0.exe</div>
+          <div class="caption">Double-click to install. Takes about 30 seconds.</div>
+        </div>
+      </div>
+
+      <div class="button-row">
+        <a id="download-btn" class="button"
+           href="https://github.com/ryanbiddy/yoink/releases/latest"
+           target="_blank" rel="noopener">Download Yoink Setup for Windows</a>
+        <span class="platform-note">Mac coming soon</span>
+      </div>
+      <div class="button-row" style="margin-top: 12px;">
+        <a id="skip-install" class="skip-link">Skip — I already installed it</a>
+      </div>
+    </section>
+
+    <!-- Step 3: Verify -->
+    <section id="step-3" class="step">
+      <div class="step-head">
+        <div class="step-num"><span class="step-num-text">3</span></div>
+        <h2>Verify Yoink is running</h2>
+      </div>
+      <p>This page will detect Yoink the moment it comes online.</p>
+
+      <div id="status-block" class="status-block is-checking" role="status" aria-live="polite">
+        <span class="status-dot"></span>
+        <span id="status-text" class="status-text">Checking for Yoink...</span>
+      </div>
+
+      <div id="status-instructions" class="hidden">
+        <p>Looks like Yoink isn't running yet. Start it from your Start Menu:</p>
+        <ol class="instructions">
+          <li>Press the <b>Windows key</b> and type <code>Yoink</code></li>
+          <li>Click <b>Yoink Server</b></li>
+          <li>Come back here — this page will detect it automatically</li>
+        </ol>
+
+        <div class="startmenu-mock" aria-hidden="true">
+          <div class="search">
+            <span class="search-icon">🔍</span>
+            <span class="search-text">Yoink</span>
+          </div>
+          <div class="result highlight">
+            <div class="result-icon">Y</div>
+            <div>
+              <div>Yoink Server</div>
+              <div style="font-size:11px;color:var(--text-mute)">App</div>
+            </div>
+          </div>
+          <div class="result">
+            <div class="result-icon" style="background:#3a3a3a;color:#aaa">📁</div>
+            <div>
+              <div>Yoink install folder</div>
+              <div style="font-size:11px;color:var(--text-mute)">Folder</div>
+            </div>
+          </div>
+        </div>
+        <p class="startmenu-caption">Your Start Menu should look like this.</p>
+      </div>
+    </section>
+
+    <!-- Step 4: First yoink -->
+    <section id="step-4" class="step hidden">
+      <div class="step-head">
+        <div class="step-num"><span class="step-num-text">4</span></div>
+        <h2>You're all set! Try your first yoink.</h2>
+      </div>
+      <p>Here's a fresh one to test with — pick this one or any YouTube video you've been meaning to dig into.</p>
+
+      <div class="video-card">
+        <img id="suggested-thumb" class="video-thumb" alt="Video thumbnail">
+        <div class="video-meta">
+          <div id="suggested-title" class="video-title">—</div>
+          <div id="suggested-byline" class="video-byline">—</div>
+          <div class="button-row">
+            <button id="yoink-suggested-btn" class="button" type="button">Yoink this video →</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="sub">Or click the orange <b>Yoink</b> button under any YouTube video.</p>
+    </section>
+
+    <div class="footer">
+      Made by ReplayRyan · <a href="https://yoink.video" target="_blank" rel="noopener">yoink.video</a>
+    </div>
+  </div>
+
+  <script src="setup.js"></script>
+</body>
+</html>

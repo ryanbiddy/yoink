@@ -40,16 +40,16 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   restoreQueue().catch((e) => console.warn("[stc] restore failed", e));
 
   // Fresh install only — not updates, not Chrome upgrades, not browser-wide
-  // shared module installs. Open the welcome page so first-time users land
-  // on a one-click test instead of an empty popup.
+  // shared module installs. Open the guided setup so first-time users land
+  // on the install/verify flow instead of an empty popup.
   if (details && details.reason === "install") {
     try {
       await chrome.tabs.create({
-        url: chrome.runtime.getURL("welcome.html"),
+        url: chrome.runtime.getURL("setup.html?source=install"),
         active: true,
       });
     } catch (e) {
-      console.warn("[stc] welcome open failed", e);
+      console.warn("[stc] setup open failed", e);
     }
   }
 });

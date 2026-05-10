@@ -105,6 +105,20 @@
     }
   }
 
+  // Throttled — prevents tab spam if the user mashes Yoink while the server
+  // is still offline. 5s window resets per page load.
+  let _lastSetupOpen = 0;
+  function openSetupOffline() {
+    const now = Date.now();
+    if (now - _lastSetupOpen < 5000) return;
+    _lastSetupOpen = now;
+    try {
+      openTab(chrome.runtime.getURL("setup.html?source=offline"));
+    } catch (e) {
+      console.warn("[Yoink] openSetupOffline failed", e);
+    }
+  }
+
   // ---- Active session awareness -----------------------------------------
   let activeSession = null;
 
@@ -159,9 +173,9 @@
     } catch (e) {
       console.error("[Yoink] server unreachable", e);
       setButtonState(btn, "error", "Yoink server offline");
-      btn.title = "Start Yoink from your system tray, or run start_server.bat from the install folder.";
-      notify("Yoink server is offline",
-             "Start Yoink from your system tray, or run start_server.bat from the install folder.");
+      btn.title = "Open the Yoink setup guide to start the helper.";
+      notify("Yoink isn't running yet", "Opening setup guide...");
+      openSetupOffline();
       resetButtonAfter(btn, 5000);
       return;
     }
@@ -223,9 +237,9 @@
     } catch (e) {
       console.error("[Yoink] server unreachable", e);
       setButtonState(btn, "error", "Yoink server offline");
-      btn.title = "Start Yoink from your system tray, or run start_server.bat from the install folder.";
-      notify("Yoink server is offline",
-             "Start Yoink from your system tray, or run start_server.bat from the install folder.");
+      btn.title = "Open the Yoink setup guide to start the helper.";
+      notify("Yoink isn't running yet", "Opening setup guide...");
+      openSetupOffline();
       resetButtonAfter(btn, 5000);
       return;
     }
@@ -285,7 +299,43 @@
       activeSession = s;
       refreshDefaultLabel();
     });
+    // If the setup page handed us a video to auto-yoink, consume the flag.
+    maybeAutoYoink(btn).catch((e) => console.warn("[Yoink] auto_yoink failed", e));
     return true;
+  }
+
+  // ---- Auto-yoink handoff from setup.html -------------------------------
+  // The setup page writes {auto_yoink: {videoId, ts}} to local storage and
+  // opens the YouTube URL in a new tab. We trigger the button on the first
+  // injection on the matching video, then atomically clear the flag so a
+  // page refresh or a different tab doesn't re-fire it.
+  const AUTO_YOINK_TTL_MS = 60_000;
+  function currentVideoId() {
+    try {
+      const u = new URL(window.location.href);
+      return u.searchParams.get("v");
+    } catch { return null; }
+  }
+  async function maybeAutoYoink(btn) {
+    const stored = await new Promise((r) => {
+      try {
+        chrome.storage.local.get({ auto_yoink: null }, (i) => r(i.auto_yoink));
+      } catch { r(null); }
+    });
+    if (!stored || !stored.videoId) return;
+    if (Date.now() - (stored.ts || 0) > AUTO_YOINK_TTL_MS) {
+      try { chrome.storage.local.remove("auto_yoink"); } catch { /* ignore */ }
+      return;
+    }
+    if (currentVideoId() !== stored.videoId) return;
+
+    // Clear before clicking so a concurrent injection (mutation observer +
+    // retry loop both fire) can't double-trigger.
+    await new Promise((r) => {
+      try { chrome.storage.local.remove("auto_yoink", r); } catch { r(); }
+    });
+
+    if (!btn.disabled) btn.click();
   }
 
   function tryInjectWithRetries() {
