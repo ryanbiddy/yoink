@@ -28,7 +28,8 @@ const INSTALLER_PUBLISHED = false;
 
 // ---- Constants -----------------------------------------------------------
 const SERVER = "http://127.0.0.1:5179";
-const PING_PATH = "/ping"; // server exposes /ping (not /health)
+// /health is the canonical liveness probe (added as an alias for /ping in v1).
+const PING_PATH = "/health";
 const POLL_MS = 2000;
 const AUTO_YOINK_TTL_MS = 60_000;
 

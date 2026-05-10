@@ -57,7 +57,7 @@ Yoinking related videos? Start a **session** in the popup, yoink as many videos 
 
 - Windows 10 / 11 (Mac and Linux on the v2 roadmap)
 - Chrome or Chromium-based browser
-- The Yoink helper server (~30 MB, includes yt-dlp + ffmpeg)
+- The Yoink helper server (~63 MB installed; bundles Python 3.11.9 + yt-dlp + ffmpeg 7.1)
 
 ### What's next
 

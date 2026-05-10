@@ -36,12 +36,27 @@ $StagingDir   = Join-Path $InstallerDir 'staging'
 $TemplatesDir = Join-Path $InstallerDir 'templates'
 $IconSrc      = Join-Path $InstallerDir 'yoink.ico'
 
-# ---- Versions -----------------------------------------------------------
+# ---- Versions (pinned for v1 ship) --------------------------------------
 $VERSION        = '1.0.0'
+# Python 3.11.9 is the last 3.11.x with binary installers; later 3.11 are
+# source-only security releases. v1 accepts this; v1.5 plan: move to 3.12.
 $PYTHON_VERSION = '3.11.9'
 $PYTHON_URL     = "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-embed-amd64.zip"
 $GETPIP_URL     = 'https://bootstrap.pypa.io/get-pip.py'
-$FFMPEG_URL     = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+# ffmpeg 7.1 essentials build from gyan.dev (mirrored on GitHub for stable URL).
+$FFMPEG_VERSION = '7.1'
+$FFMPEG_URL     = "https://github.com/GyanD/codexffmpeg/releases/download/$FFMPEG_VERSION/ffmpeg-$FFMPEG_VERSION-essentials_build.zip"
+# yt-dlp pip pin -- bump after compatibility-testing a new release.
+$YTDLP_VERSION  = '2026.03.17'
+
+# ---- Hash verification --------------------------------------------------
+# Lock in known-good SHA256s so a compromised mirror or silent upstream
+# change can't slip into the install. To bootstrap: leave a hash empty,
+# run the build once, and the build will print the computed hash + a
+# warning. Paste it here, commit, and the next build verifies.
+$PYTHON_SHA256 = ''   # python-3.11.9-embed-amd64.zip
+$FFMPEG_SHA256 = ''   # ffmpeg-7.1-essentials_build.zip
+$GETPIP_SHA256 = ''   # get-pip.py (rolls forward; lock if you want to pin)
 
 # ---- Helpers ------------------------------------------------------------
 function Write-Step($msg) {
@@ -77,6 +92,22 @@ function Get-CachedFile($url, $dest) {
     }
 }
 
+function Confirm-Hash($path, $expected, $label) {
+    $actual = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLower()
+    if (-not $expected) {
+        Write-Warning "    $label has no locked SHA256. Computed: $actual"
+        Write-Warning "    Lock it by setting the matching `$..._SHA256 in build.ps1, then rebuild."
+        return
+    }
+    if ($actual -ne $expected.ToLower()) {
+        # Remove the bad cache so a re-run downloads fresh, in case the
+        # corruption was transient. Don't ship a mismatched artifact.
+        Remove-Item -Force -ErrorAction SilentlyContinue $path
+        throw "$label SHA256 mismatch.`nExpected: $expected`nActual:   $actual"
+    }
+    Write-Host "    $label hash OK"
+}
+
 # ---- Optional clean -----------------------------------------------------
 if ($Clean) {
     Write-Step 'Cleaning build/ and staging/'
@@ -103,8 +134,11 @@ $ffmpegZip = Join-Path $CacheDir 'ffmpeg-release-essentials.zip'
 $getPipPy  = Join-Path $CacheDir 'get-pip.py'
 
 Get-CachedFile $PYTHON_URL $pythonZip
+Confirm-Hash $pythonZip $PYTHON_SHA256 'Python embeddable'
 Get-CachedFile $FFMPEG_URL $ffmpegZip
+Confirm-Hash $ffmpegZip $FFMPEG_SHA256 'ffmpeg'
 Get-CachedFile $GETPIP_URL $getPipPy
+Confirm-Hash $getPipPy $GETPIP_SHA256 'get-pip.py'
 
 # ---- 2. Stage -----------------------------------------------------------
 Write-Step 'Staging'
@@ -132,10 +166,12 @@ $embedPython = "$StagingDir\python\python.exe"
 & $embedPython $getPipPy --no-warn-script-location
 if ($LASTEXITCODE -ne 0) { throw 'pip bootstrap failed' }
 
-# 2d. Install yt-dlp (no .pyc compilation -- saves space, embeddable
-#     compiles on demand at runtime)
-Write-Host '    installing yt-dlp...'
-& $embedPython -m pip install --no-warn-script-location --no-compile yt-dlp
+# 2d. Install yt-dlp at a pinned version. Pip's hash-locking would require
+#     a requirements file with --require-hashes; for v1 we accept the
+#     trust-pip-itself model since the version pin is the load-bearing part
+#     (a compromised release on PyPI affects everyone, not just us).
+Write-Host "    installing yt-dlp==$YTDLP_VERSION..."
+& $embedPython -m pip install --no-warn-script-location --no-compile "yt-dlp==$YTDLP_VERSION"
 if ($LASTEXITCODE -ne 0) { throw 'pip install yt-dlp failed' }
 
 # 2e. Trim dev-only and build-time files we don't need at runtime.

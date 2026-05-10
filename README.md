@@ -26,7 +26,13 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 
 ## Install
 
-One-click installer ships in v1 launch (target: 2 weeks). Manual setup until then — see [REQUIREMENTS.md](./REQUIREMENTS.md).
+1. **Download the installer** -- grab `Yoink-Setup-1.0.0.exe` from the [latest release](https://github.com/ryanbiddy/yoink/releases/latest). Windows only for v1; macOS in v1.5.
+2. **Run it.** Defaults install to `%LOCALAPPDATA%\Yoink\` (no admin required). The "Launch Yoink Server now" checkbox on the finish page starts the helper immediately, and an autostart entry runs it on every Windows login. A toast confirms when it's running.
+3. **Install the extension** from the Chrome Web Store. The first time you launch the popup it'll detect the helper and the indicator will go green within a couple of seconds.
+
+If the indicator stays orange, open the Start Menu, search "Yoink", and click **Yoink Server**. Stop it the same way via **Stop Yoink Server**. Uninstall removes everything including the autostart entry.
+
+For developers running from source, see [REQUIREMENTS.md](./REQUIREMENTS.md). Build the installer locally with `./build.ps1` -- see [docs/build-installer.md](./docs/build-installer.md).
 
 ## How it works
 
@@ -37,9 +43,11 @@ One-click installer ships in v1 launch (target: 2 weeks). Manual setup until the
 
 ## Customizing the prompt library
 
-The Yoink popup ships with eight starter prompts ("Decode the hook", "Outline the structure", and so on). They live in `extension/prompts.json` and are fully editable — add your own, delete the ones you don't use, rename labels, anything goes.
+The Yoink popup ships with eleven starter prompts ("Decode the hook", "Outline the structure", "Format as Twitter thread", and so on). They live in `extension/prompts.json` and are fully editable — add your own, delete the ones you don't use, rename labels, anything goes.
 
-Open the file via the **Edit prompts ▸** link at the bottom of the popup's prompt panel (it pops Explorer at the file). Or edit `extension/prompts.json` directly. The format is:
+In v1 the prompt file lives inside the unpacked extension, so editing it requires a dev install. The in-popup "Edit prompts" link is hidden in v1 because the on-disk path it opened only exists in dev mode -- a unified prompt store between extension and server is tracked for v1.1.
+
+The format is:
 
 ```json
 [
@@ -47,7 +55,7 @@ Open the file via the **Edit prompts ▸** link at the bottom of the popup's pro
 ]
 ```
 
-Changes take effect the next time you open the popup — no extension reload required.
+Changes take effect the next time you open the popup — no extension reload required if you're running from a `chrome://extensions/`-loaded unpacked copy.
 
 ## Customizing topic folders
 

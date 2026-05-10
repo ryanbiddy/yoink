@@ -264,6 +264,14 @@ function notify(title, message) {
 // The offscreen doc is now long-lived: closing it would kill the
 // matchMedia listener that drives theme-aware icon swaps. Both clipboard
 // writes and theme detection share a single document.
+//
+// Concurrency: ensureOffscreen() can be hit from multiple async paths
+// (clipboard write + theme sync + queue startup). Without coalescing, two
+// callers can both observe "no doc exists" before either has called
+// createDocument(), then both try to create -- the second throws "Only a
+// single offscreen document may be created". Cache the in-flight create
+// promise so concurrent callers wait on the same operation.
+let _ensureOffscreenInflight = null;
 async function ensureOffscreen() {
   if (chrome.offscreen && chrome.offscreen.hasDocument) {
     if (await chrome.offscreen.hasDocument()) return;
@@ -273,13 +281,28 @@ async function ensureOffscreen() {
     });
     if (contexts && contexts.length) return;
   }
-  await chrome.offscreen.createDocument({
-    url: OFFSCREEN_URL,
-    reasons: OFFSCREEN_REASONS,
-    justification:
-      "Write extracted transcript to the system clipboard, and watch " +
-      "prefers-color-scheme so the toolbar icon matches the browser theme.",
-  });
+  if (_ensureOffscreenInflight) return _ensureOffscreenInflight;
+  _ensureOffscreenInflight = (async () => {
+    try {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_URL,
+        reasons: OFFSCREEN_REASONS,
+        justification:
+          "Write extracted transcript to the system clipboard, and watch " +
+          "prefers-color-scheme so the toolbar icon matches the browser theme.",
+      });
+    } catch (e) {
+      // If a concurrent caller created the doc between our existence check
+      // and createDocument(), the second create throws -- swallow that
+      // specific case so callers see a successful-creation outcome.
+      if (!String(e && e.message || e).includes("single offscreen document")) {
+        throw e;
+      }
+    } finally {
+      _ensureOffscreenInflight = null;
+    }
+  })();
+  return _ensureOffscreenInflight;
 }
 
 async function copyToClipboard(text) {

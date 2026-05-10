@@ -24,6 +24,17 @@ import sys
 from pathlib import Path
 
 
+# Windows reserved device names. As path segments these fail to open even
+# when extensions are appended ("CON.txt" still resolves to the console
+# device). slugify() prepends an underscore when it would otherwise emit
+# one of these. Match is case-insensitive.
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
+
+
 def slugify(text: str) -> str:
     # ASCII-only so the resulting slug is safe as a filesystem path segment
     # AND satisfies the server's strict session_id regex
@@ -31,7 +42,12 @@ def slugify(text: str) -> str:
     # chars and a session named "cafe" with non-ASCII letters would slug to
     # those same letters -- which the API would later reject when the user
     # tried to add to it.
-    return re.sub(r"[^\w\-]+", "_", text.strip(), flags=re.ASCII)[:80].strip("_")
+    slug = re.sub(r"[^\w\-]+", "_", text.strip(), flags=re.ASCII)[:80].strip("_")
+    # Windows reserved-name guard. A video titled "CON" or "AUX" would
+    # otherwise produce a folder Windows refuses to open.
+    if slug.upper() in _WINDOWS_RESERVED_NAMES:
+        slug = "_" + slug
+    return slug
 
 
 def fmt_time(seconds: float) -> str:

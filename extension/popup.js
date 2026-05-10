@@ -454,21 +454,6 @@ document.getElementById("send-chatgpt").addEventListener("click", () => {
   openDestination(CHATGPT_URL, "ChatGPT");
 });
 
-// ---- Edit prompts ---------------------------------------------------------
-// The server (which knows the on-disk path of prompts.json) opens Explorer
-// at the file. Avoids dragging the user to chrome://extensions and beyond.
-document.getElementById("edit-prompts").addEventListener("click", async (ev) => {
-  ev.preventDefault();
-  try {
-    const res = await STC.openPromptsFile();
-    if (!res || res.ok === false) {
-      showToast("Couldn't open prompts.json — server may be down.");
-    }
-  } catch {
-    showToast("Couldn't open prompts.json — server may be down.");
-  }
-});
-
 // ---- View all yoinks ------------------------------------------------------
 // Opens _all-yoinks-index.md in the user's default markdown viewer.
 document.getElementById("open-index").addEventListener("click", async (ev) => {

@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 server.log
 server.pid
+token.txt
 .env
 dist/
 build/
@@ -10,5 +11,15 @@ installer/staging/
 *.zip
 video.*
 Yoink/
+
+# User-facing yoink output. In dev mode the server may write to repo-local
+# Desktop\Yoink-style paths; ignoring these patterns prevents private
+# transcripts and screenshots from accidentally landing in commits.
+# Note: existing `Yoink/` entry above covers the per-topic folders
+# (Desktop\Yoink\<topic>\<slug>\). On Windows NTFS git is typically
+# configured with core.ignorecase=true, so a `/[A-Z]*/` pattern would
+# accidentally match docs/ and extension/ too -- avoid that.
+_sessions/
+_all-yoinks-index.md
 
 .claude/

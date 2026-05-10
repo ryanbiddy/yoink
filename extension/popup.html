@@ -260,9 +260,9 @@
   <div class="panel">
     <div class="panel-title">After pasting, copy a starter prompt:</div>
     <div id="quick-prompts" class="quick-prompts"></div>
-    <div class="edit-prompts-row">
-      <a class="edit-prompts-link" id="edit-prompts">Edit prompts ▸</a>
-    </div>
+    <!-- Edit prompts ▸ link is hidden in v1: the on-disk path it opened
+         only exists in dev mode. Restoring requires unifying the prompt
+         storage between extension and server. Tracked for v1.1. -->
   </div>
 
   <!-- Recent yoinks -->

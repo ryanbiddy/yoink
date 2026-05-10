@@ -11,6 +11,85 @@
   const DEFAULT_INTERVAL = 30;
   const REQUEST_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
+  // ---- Auth token (P0-1) ----------------------------------------------
+  // Per-install token issued by the local server. Fetched lazily on first
+  // mutating request, cached in memory + chrome.storage.local. On 403 we
+  // refresh once (handles the server-reinstall-regenerated-token case).
+  // /token is gated server-side by the chrome-extension:// origin, so a
+  // webpage attempting CSRF can't grab it.
+  const TOKEN_STORAGE_KEY = "yoink_token";
+  let _cachedToken = null;
+  let _tokenFetchPromise = null;
+
+  function _readStoredToken() {
+    return new Promise((r) => {
+      try {
+        chrome.storage.local.get({ [TOKEN_STORAGE_KEY]: null }, (i) => {
+          r((i && i[TOKEN_STORAGE_KEY]) || null);
+        });
+      } catch { r(null); }
+    });
+  }
+  function _writeStoredToken(t) {
+    return new Promise((r) => {
+      try { chrome.storage.local.set({ [TOKEN_STORAGE_KEY]: t }, () => r()); }
+      catch { r(); }
+    });
+  }
+  async function _fetchFreshToken() {
+    try {
+      const res = await fetch(`${SERVER}/token`, {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store",
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return (data && typeof data.token === "string") ? data.token : null;
+    } catch { return null; }
+  }
+  async function getToken({ refresh = false } = {}) {
+    if (!refresh && _cachedToken) return _cachedToken;
+    if (!refresh) {
+      const stored = await _readStoredToken();
+      if (stored) { _cachedToken = stored; return stored; }
+    }
+    // Coalesce parallel fetches so the first wave of authed requests after
+    // a wake doesn't slam /token N times.
+    if (!_tokenFetchPromise) {
+      _tokenFetchPromise = (async () => {
+        const fresh = await _fetchFreshToken();
+        if (fresh) {
+          _cachedToken = fresh;
+          await _writeStoredToken(fresh);
+        }
+        const out = fresh;
+        _tokenFetchPromise = null;
+        return out;
+      })();
+    }
+    return _tokenFetchPromise;
+  }
+  async function _authedFetch(path, init) {
+    init = init || {};
+    const doFetch = async (tk) => {
+      const headers = Object.assign({}, init.headers || {});
+      if (tk) headers["X-Yoink-Token"] = tk;
+      return fetch(`${SERVER}${path}`, Object.assign({}, init, {
+        headers, mode: "cors", credentials: "omit",
+      }));
+    };
+    let token = await getToken();
+    let res = await doFetch(token);
+    if (res.status === 403) {
+      // Server may have regenerated the token (reinstall) -- refresh once.
+      token = await getToken({ refresh: true });
+      res = await doFetch(token);
+    }
+    return res;
+  }
+
   // Pull a YouTube video ID out of any of the URL shapes the context menu
   // can hand us. Returns null if nothing video-shaped is found.
   function extractVideoId(rawUrl) {
@@ -83,9 +162,8 @@
     try {
       let res;
       try {
-        res = await fetch(targetUrl, {
+        res = await _authedFetch("/extract", {
           method: "POST",
-          mode: "cors",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestBody),
           signal: controller.signal,
@@ -115,8 +193,14 @@
   }
 
   async function ping() {
+    // /health and /ping are intentionally unauthenticated -- they're the
+    // public liveness probe used by the popup, the in-page button, and
+    // setup.html. Keep them token-free so a stale token can't make the
+    // server look offline.
     try {
-      const res = await fetch(`${SERVER}/ping`, { method: "GET", mode: "cors" });
+      const res = await fetch(`${SERVER}/health`, {
+        method: "GET", mode: "cors", credentials: "omit", cache: "no-store",
+      });
       if (!res.ok) return null;
       return await res.json();
     } catch {
@@ -129,9 +213,8 @@
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch(`${SERVER}${path}`, {
+      const res = await _authedFetch(path, {
         method: "POST",
-        mode: "cors",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body || {}),
         signal: controller.signal,
@@ -146,7 +229,7 @@
 
   async function _getJson(path) {
     try {
-      const res = await fetch(`${SERVER}${path}`, { method: "GET", mode: "cors" });
+      const res = await _authedFetch(path, { method: "GET" });
       return await res.json().catch(() => ({ ok: false, error: "Bad JSON" }));
     } catch (e) {
       return { ok: false, error: String(e) };

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -54,6 +55,50 @@ ALLOWED_ORIGINS = {
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 SUBPROCESS_KW = {"creationflags": CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+
+# ---- Hardening limits (P1-3 / P1-4) ---------------------------------------
+MAX_BODY_BYTES = 64 * 1024            # 64KB POST body cap
+MAX_SCREENSHOTS = 200                  # cap per video
+LONG_VIDEO_SECONDS = 2 * 60 * 60       # 2 hours -- log warning above this
+YTDLP_TIMEOUT_SEC = 30 * 60            # main extract timeout
+COMMENTS_TIMEOUT_SEC = 5 * 60
+FFMPEG_TIMEOUT_SEC = 15 * 60
+
+# ---- Auth token (P0-1) ----------------------------------------------------
+# Per-install random token. Persisted next to server.py (which lives in
+# %LOCALAPPDATA%\Yoink in the installed product, or in the dev repo
+# directory in dev mode -- gitignored either way). The extension fetches
+# this via /token (gated by chrome-extension:// origin) on first launch
+# and includes it in X-Yoink-Token on every subsequent request.
+TOKEN_PATH = HERE / "token.txt"
+
+
+def _load_or_create_token() -> str:
+    if TOKEN_PATH.exists():
+        try:
+            existing = TOKEN_PATH.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        except OSError:
+            pass
+    fresh = secrets.token_urlsafe(32)
+    try:
+        TOKEN_PATH.write_text(fresh, encoding="utf-8")
+        # Best-effort: tighten file perms on POSIX. On Windows, ACLs default
+        # to user-only for files in %LOCALAPPDATA%, so chmod is a no-op but
+        # harmless.
+        try:
+            os.chmod(TOKEN_PATH, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        # Non-fatal: keep an in-memory token for the session. Persistence is
+        # nice-to-have; auth still works within this server's lifetime.
+        pass
+    return fresh
+
+
+TOKEN = _load_or_create_token()
 
 # Invoke yt-dlp via the same interpreter rather than relying on PATH. pip's
 # --user install puts yt-dlp.exe in %APPDATA%\Python\PythonXX\Scripts which
@@ -276,6 +321,7 @@ def _fetch_metadata(url: str) -> dict:
     raw = subprocess.check_output(
         [*YTDLP_CMD, "--dump-single-json", "--no-download", url],
         text=True, stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+        timeout=COMMENTS_TIMEOUT_SEC,
         **SUBPROCESS_KW,
     )
     return json.loads(raw)
@@ -435,6 +481,7 @@ def _comments_worker(url: str, output_folder: Path, yoink_path: Path,
              "-o", str(info_template),
              url],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=COMMENTS_TIMEOUT_SEC,
             **SUBPROCESS_KW,
         )
         info_files = list(output_folder.glob("*_yoink_comments.info.json"))
@@ -485,7 +532,8 @@ def _start_comments_thread(url: str, output_folder: Path,
 # ---------------------------------------------------------------------------
 def _build_yoink_md(metadata: dict, url: str, entries: list, shots: list,
                     interval: int, channel_ctx: dict,
-                    yoinked_at: str, topic: str) -> str:
+                    yoinked_at: str, topic: str,
+                    cap_warning: str | None = None) -> str:
     """Produce the v1 corpus markdown. Comments section is a placeholder
     that the background worker rewrites once the fetch completes.
     """
@@ -511,6 +559,8 @@ def _build_yoink_md(metadata: dict, url: str, entries: list, shots: list,
     parts.append(f"**URL:** {url}")
     parts.append(f"**Yoinked:** {yoinked_at}")
     parts.append(f"**Topic:** {topic}")
+    if cap_warning:
+        parts.append(f"**Note:** {cap_warning}")
     parts.append("")
     parts.append("---")
     parts.append("")
@@ -645,6 +695,26 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     video_slug = slugify(title) or "video"
     log.info("Yoinking '%s' -> %s (topic=%s)", title, output_folder, topic)
 
+    # P1-4: bound screenshot count so a 4-hour video at 5s interval doesn't
+    # produce thousands of jpgs. Recompute interval upward when needed and
+    # surface the change in the corpus md.
+    duration = float(metadata.get("duration") or 0)
+    if duration > LONG_VIDEO_SECONDS:
+        log.warning("Long video: %.0f minutes -- yoink may take a while",
+                    duration / 60.0)
+    requested_interval = interval
+    cap_warning: str | None = None
+    if duration > 0 and (duration / max(1, interval)) > MAX_SCREENSHOTS:
+        # Round up so we land at <= MAX_SCREENSHOTS shots, not slightly over.
+        new_interval = max(interval, int((duration + MAX_SCREENSHOTS - 1) // MAX_SCREENSHOTS))
+        cap_warning = (
+            f"Capped screenshots at {MAX_SCREENSHOTS}: interval raised from "
+            f"{requested_interval}s to {new_interval}s for this video "
+            f"(duration {int(duration // 60)}m)."
+        )
+        log.warning(cap_warning)
+        interval = new_interval
+
     # Persist the raw metadata blob for debugging without re-downloading.
     try:
         (output_folder / "metadata.json").write_text(
@@ -657,23 +727,31 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     # Thumbnail (best-effort; absence shouldn't fail the extraction).
     _download_thumbnail(metadata, output_folder)
 
-    # Video + subs.
-    subprocess.run(
-        [
-            *YTDLP_CMD,
-            "--write-auto-subs",
-            "--write-subs",
-            "--sub-lang", "en.*,en",
-            "--convert-subs", "srt",
-            "-f", "worst[height>=360]/worst",
-            "-o", str(output_folder / "video.%(ext)s"),
-            url,
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        **SUBPROCESS_KW,
-    )
+    # Video + subs. Bounded to YTDLP_TIMEOUT_SEC so a stuck download doesn't
+    # hold _extract_lock forever and block other yoinks.
+    try:
+        subprocess.run(
+            [
+                *YTDLP_CMD,
+                "--write-auto-subs",
+                "--write-subs",
+                "--sub-lang", "en.*,en",
+                "--convert-subs", "srt",
+                "-f", "worst[height>=360]/worst",
+                "-o", str(output_folder / "video.%(ext)s"),
+                url,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=YTDLP_TIMEOUT_SEC,
+            **SUBPROCESS_KW,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "Video too long for current settings -- try again with a longer "
+            "screenshot interval, or this video may be too long for Yoink."
+        )
 
     video_files = [f for f in output_folder.glob("video.*")
                    if f.suffix in (".mp4", ".webm", ".mkv")]
@@ -684,19 +762,26 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
 
     shots_dir = output_folder / "screenshots"
     shots_dir.mkdir(exist_ok=True)
-    subprocess.run(
-        [
-            "ffmpeg", "-loglevel", "error", "-y",
-            "-i", str(video_file),
-            "-vf", f"fps=1/{interval}",
-            "-q:v", "2",
-            str(shots_dir / "shot_%04d.jpg"),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        **SUBPROCESS_KW,
-    )
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-loglevel", "error", "-y",
+                "-i", str(video_file),
+                "-vf", f"fps=1/{interval}",
+                "-q:v", "2",
+                str(shots_dir / "shot_%04d.jpg"),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=FFMPEG_TIMEOUT_SEC,
+            **SUBPROCESS_KW,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "Screenshot generation timed out -- try a longer screenshot "
+            "interval (current: %ds)." % interval
+        )
     shots = sorted(shots_dir.glob("shot_*.jpg"))
 
     entries = list(parse_srt(srt_files[0])) if srt_files else []
@@ -716,12 +801,52 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
         metadata=metadata, url=url, entries=entries, shots=shots,
         interval=interval, channel_ctx=channel_ctx,
         yoinked_at=_now_iso(), topic=topic,
+        cap_warning=cap_warning,
     )
     # Filename matches the folder's slug -- "kapathy-talk/kapathy-talk.md"
     # rather than "kapathy-talk/yoink.md" -- so the file is identifiable
     # outside its folder.
     yoink_path = _corpus_path(output_folder)
     yoink_path.write_text(yoink_md, encoding="utf-8")
+
+    # Structured JSON sidecar (STRAT). Same data the markdown carries but
+    # in a machine-shaped form: future MCP server / programmatic tooling
+    # consumes this without having to parse the human-facing md. Written
+    # next to the md so it travels with the folder.
+    try:
+        sidecar = {
+            "schema_version": 1,
+            "url": url,
+            "title": title,
+            "topic": topic,
+            "yoinked_at": _now_iso(),
+            "interval_seconds": interval,
+            "requested_interval_seconds": requested_interval,
+            "screenshot_cap_warning": cap_warning,
+            "duration_seconds": duration,
+            "channel": metadata.get("channel") or metadata.get("uploader"),
+            "channel_url": metadata.get("channel_url") or metadata.get("uploader_url"),
+            "upload_date": metadata.get("upload_date"),
+            "view_count": metadata.get("view_count"),
+            "like_count": metadata.get("like_count"),
+            "video_id": metadata.get("id"),
+            "transcript": [
+                {"start": s, "end": e, "text": t} for s, e, t in entries
+            ],
+            "screenshots": [
+                f"screenshots/{p.name}" for p in shots
+            ],
+            "channel_context": channel_ctx,
+        }
+        sidecar_path = output_folder / f"{output_folder.name}.json"
+        sidecar_path.write_text(
+            json.dumps(sidecar, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except (OSError, TypeError) as e:
+        # Non-fatal: the markdown is the user-facing artifact. Sidecar is
+        # for future tooling.
+        log.warning("could not write JSON sidecar: %s", e)
 
     video_file.unlink(missing_ok=True)
 
@@ -792,7 +917,8 @@ def friendly_error(e: BaseException) -> str:
 # Input validation
 # ---------------------------------------------------------------------------
 _YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
-_VIDEO_ID_RE = re.compile(r"^[\w-]{6,}$")
+# ASCII-explicit so non-ASCII unicode word chars can't sneak through \w.
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -1151,13 +1277,45 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            # X-Yoink-Token is the auth header the extension sends on every
+            # mutating request. Browsers won't send it without the OPTIONS
+            # preflight allowing it explicitly.
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Yoink-Token")
             self.send_header("Access-Control-Max-Age", "600")
             # Private Network Access: Chrome requires this header when a public
             # HTTPS origin (youtube.com) fetches a loopback resource. Without
             # it the preflight is rejected and fetch fails as "Failed to fetch"
             # before any visible request reaches the handler.
             self.send_header("Access-Control-Allow-Private-Network", "true")
+
+    # ---- Auth helpers ----
+    def _request_token(self) -> str:
+        """Pull the auth token from either the X-Yoink-Token header or a
+        ?token=... query param. Header is preferred."""
+        h = self.headers.get("X-Yoink-Token")
+        if h:
+            return h.strip()
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            return (qs.get("token") or [""])[0].strip()
+        except Exception:
+            return ""
+
+    def _check_token(self) -> bool:
+        return secrets.compare_digest(self._request_token(), TOKEN)
+
+    def _is_extension_origin(self) -> bool:
+        return (self.headers.get("Origin", "") or "").startswith("chrome-extension://")
+
+    def _require_token(self) -> bool:
+        """Returns True if request authenticates. Otherwise sends a 403 and
+        returns False -- caller should `return` immediately."""
+        if self._check_token():
+            return True
+        log.info("auth: rejected %s %s (token mismatch)",
+                 self.command, self.path.split("?", 1)[0])
+        self._send_json(403, {"ok": False, "error": "missing or invalid token"})
+        return False
 
     def _send_json(self, status: int, payload: dict):
         body = json.dumps(payload).encode("utf-8")
@@ -1168,10 +1326,40 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # Sentinel raised by _read_json_body when validation fails. Carries the
+    # HTTP status the caller should send back. Keeps the caller code simple
+    # (one try/except instead of three checks per endpoint).
+    class _BodyError(Exception):
+        def __init__(self, status: int, message: str):
+            super().__init__(message)
+            self.status = status
+            self.message = message
+
     def _read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0"))
+        # P1-3: bound everything we trust from the network. Without these
+        # checks Content-Length was unbounded (memory exhaustion via large
+        # POST), Content-Type was unchecked (HTML form posts could trigger
+        # mutations), and a JSON array body would blow up later code that
+        # called body.get(...).
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            raise Handler._BodyError(415, "Content-Type must be application/json")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise Handler._BodyError(400, "Bad Content-Length")
+        if length < 0:
+            raise Handler._BodyError(400, "Bad Content-Length")
+        if length > MAX_BODY_BYTES:
+            raise Handler._BodyError(413, f"Body too large (>{MAX_BODY_BYTES} bytes)")
         raw = self.rfile.read(length) if length else b"{}"
-        return json.loads(raw.decode("utf-8") or "{}")
+        try:
+            parsed = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise Handler._BodyError(400, f"Bad JSON: {e}")
+        if not isinstance(parsed, dict):
+            raise Handler._BodyError(400, "Top-level JSON must be an object")
+        return parsed
 
     # ---- Methods ----
     def do_OPTIONS(self):
@@ -1188,23 +1376,43 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # /health is a friendlier alias for the same liveness probe; both
         # paths return the same payload so existing clients keep working.
-        if self.path == "/ping" or self.path == "/health":
-            log.info("GET %s from %s -> ok", self.path, self.client_address[0])
+        bare = self.path.split("?", 1)[0]
+        if bare == "/ping" or bare == "/health":
+            # Public liveness probe -- intentionally unauthenticated.
+            log.info("GET %s from %s -> ok", bare, self.client_address[0])
             return self._send_json(200, {"ok": True, "version": VERSION})
-        if self.path == "/session/list":
+        if bare == "/token":
+            return self._handle_token()
+        # Everything below mutates state or reveals user data -- token-gated.
+        if not self._require_token():
+            return
+        if bare == "/session/list":
             return self._handle_session_list()
-        if self.path == "/session/active":
+        if bare == "/session/active":
             return self._handle_session_active()
-        if self.path == "/open-prompts":
+        if bare == "/open-prompts":
             return self._handle_open_prompts()
-        if self.path == "/open-index":
+        if bare == "/open-index":
             return self._handle_open_index()
-        if self.path == "/recent":
+        if bare == "/recent":
             return self._handle_recent()
-        if self.path.startswith("/open-folder?"):
+        if bare == "/open-folder":
             return self._handle_open_folder()
         log.info("GET %s -> 404", self.path)
         self._send_json(404, {"ok": False, "error": "not found"})
+
+    # ---- /token (chrome-extension origin only) ----
+    # Returns the per-install auth token. Gated by Origin so a non-extension
+    # origin (a webpage attempting CSRF) can't grab it -- browsers refuse to
+    # let pages forge Origin. Local processes (curl, malicious scripts) CAN
+    # forge it, but they already run with the user's privileges and could
+    # read token.txt directly. The Origin gate's job is CSRF defense, not
+    # local-attacker defense.
+    def _handle_token(self):
+        if not self._is_extension_origin():
+            log.info("GET /token rejected (origin=%r)", self.headers.get("Origin"))
+            return self._send_json(403, {"ok": False, "error": "forbidden"})
+        self._send_json(200, {"ok": True, "token": TOKEN})
 
     # ---- /recent ----
     # Walk Desktop\Yoink\<topic>\<slug>\ and return the 3 most recent video
@@ -1312,25 +1520,31 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "path": str(prompts_path)})
 
     def do_POST(self):
+        # Auth first so we don't even read the body for unauthenticated
+        # callers. Public POST endpoints don't exist today, so the gate is
+        # unconditional here.
+        if not self._require_token():
+            return
         try:
             body = self._read_json_body()
-        except (ValueError, json.JSONDecodeError) as e:
-            return self._send_json(400, {"ok": False, "error": f"Invalid JSON body: {e}"})
+        except Handler._BodyError as e:
+            return self._send_json(e.status, {"ok": False, "error": e.message})
 
-        if self.path == "/extract":
+        bare = self.path.split("?", 1)[0]
+        if bare == "/extract":
             return self._handle_extract(body)
-        if self.path == "/session/start":
+        if bare == "/session/start":
             return self._handle_session_start(body)
-        if self.path == "/session/add":
+        if bare == "/session/add":
             return self._handle_session_add(body)
-        if self.path == "/session/close":
+        if bare == "/session/close":
             return self._handle_session_close(body)
-        if self.path == "/session/cancel":
+        if bare == "/session/cancel":
             return self._handle_session_cancel(body)
-        if self.path == "/session/open":
+        if bare == "/session/open":
             return self._handle_session_open(body)
 
-        log.info("POST %s -> 404", self.path)
+        log.info("POST %s -> 404", bare)
         self._send_json(404, {"ok": False, "error": "not found"})
 
     def _validate_session_id(self, body: dict):
