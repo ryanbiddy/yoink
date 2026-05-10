@@ -1,5 +1,13 @@
 // Popup script. STC.* helpers come from lib/extract.js loaded just before.
 
+// ---- v2 dev flag ----------------------------------------------------------
+// FLIP TO FALSE WHEN CODEX BACKEND LANDS.
+// Routes STC.playlist* / STC.jobStatus / STC.jobCancel through the local mock
+// layer (lib/mock-api.js) instead of the real server. See docs/v2-api.md
+// (lands on codex/v2-backend-playlist) for the contract these mocks shadow.
+const USE_MOCK_API = true;
+globalThis.YOINK_USE_MOCK_API = USE_MOCK_API;
+
 const DEFAULT_INTERVAL = 30;
 const CORPUS_WARN_CHARS = 500_000;
 
@@ -490,3 +498,382 @@ window.addEventListener("unload", () => {
   clearInterval(pingTimer);
   clearInterval(sessionTimer);
 });
+
+// =====================================================================
+// v2 — Playlist mode
+// =====================================================================
+// Self-contained: only touches its own DOM (#mode-playlist + .mode-btn) and
+// the #mode-single wrapper visibility. The single-video flow above runs
+// untouched whenever mode = "single".
+// ---------------------------------------------------------------------
+
+(function setupPlaylistMode() {
+  const POLL_MS = 1000;
+  const PLAYLIST_CAP = 10;
+
+  const modeSingleEl = document.getElementById("mode-single");
+  const modePlaylistEl = document.getElementById("mode-playlist");
+  const modeBtns = document.querySelectorAll(".mode-btn[data-mode]");
+
+  // Input panel
+  const inputPanel = document.getElementById("pl-input-panel");
+  const urlInput = document.getElementById("pl-url");
+  const previewBtn = document.getElementById("pl-preview-btn");
+  const inputError = document.getElementById("pl-input-error");
+
+  // Preview panel
+  const previewPanel = document.getElementById("pl-preview-panel");
+  const capNotice = document.getElementById("pl-cap-notice");
+  const previewListEl = document.getElementById("pl-preview-list");
+  const startBtn = document.getElementById("pl-start-btn");
+
+  // Progress panel
+  const progressPanel = document.getElementById("pl-progress-panel");
+  const progressFill = document.getElementById("pl-progress-fill");
+  const progressText = document.getElementById("pl-progress-text");
+  const phaseRow = document.getElementById("pl-phase-row");
+  const cancelBtnEl = document.getElementById("pl-cancel-btn");
+
+  // Done / cancelled / failed
+  const donePanel = document.getElementById("pl-done-panel");
+  const doneSummary = document.getElementById("pl-done-summary");
+  const doneMeta = document.getElementById("pl-done-meta");
+  const openFolderBtn = document.getElementById("pl-open-folder-btn");
+  const startAnotherBtn = document.getElementById("pl-start-another-btn");
+  const cancelledPanel = document.getElementById("pl-cancelled-panel");
+  const cancelledRestartBtn = document.getElementById("pl-cancelled-restart-btn");
+  const failedPanel = document.getElementById("pl-failed-panel");
+  const failedMsg = document.getElementById("pl-failed-msg");
+  const failedRestartBtn = document.getElementById("pl-failed-restart-btn");
+
+  // State
+  let previewedUrl = null;
+  let previewedVideos = [];
+  let activeJobId = null;
+  let pollTimer = null;
+  let resultPayload = null;
+
+  // ---- mode switching --------------------------------------------------
+  function setMode(mode) {
+    for (const b of modeBtns) {
+      const isActive = b.dataset.mode === mode;
+      b.classList.toggle("active", isActive);
+      b.setAttribute("aria-selected", isActive ? "true" : "false");
+    }
+    if (mode === "playlist") {
+      modeSingleEl.classList.add("hidden");
+      modePlaylistEl.classList.remove("hidden");
+    } else {
+      modePlaylistEl.classList.add("hidden");
+      modeSingleEl.classList.remove("hidden");
+    }
+  }
+  for (const b of modeBtns) {
+    b.addEventListener("click", () => {
+      if (b.disabled) return;
+      setMode(b.dataset.mode);
+    });
+  }
+
+  // ---- helpers ---------------------------------------------------------
+  function fmtDuration(seconds) {
+    const s = Math.max(0, parseInt(seconds, 10) || 0);
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}:${String(r).padStart(2, "0")}`;
+  }
+
+  function showOnly(panel) {
+    for (const el of [inputPanel, previewPanel, progressPanel, donePanel, cancelledPanel, failedPanel]) {
+      if (!el) continue;
+      el.classList.toggle("hidden", el !== panel);
+    }
+  }
+
+  function showError(msg) {
+    inputError.textContent = msg;
+    inputError.classList.remove("hidden");
+  }
+  function clearError() {
+    inputError.textContent = "";
+    inputError.classList.add("hidden");
+  }
+
+  function resetPlaylistUI() {
+    stopPolling();
+    activeJobId = null;
+    resultPayload = null;
+    previewedUrl = null;
+    previewedVideos = [];
+    urlInput.value = "";
+    clearError();
+    previewListEl.innerHTML = "";
+    capNotice.classList.add("hidden");
+    progressFill.style.width = "0%";
+    progressText.textContent = "Queued…";
+    for (const chip of phaseRow.querySelectorAll(".pl-phase-chip")) {
+      chip.classList.remove("active", "done");
+    }
+    showOnly(inputPanel);
+  }
+
+  // ---- preview ---------------------------------------------------------
+  function isLikelyPlaylistUrl(s) {
+    // Light client-side guard — the backend is authoritative. Just enough to
+    // catch an obvious mis-paste so we don't 500ms-spin on garbage.
+    if (!s) return false;
+    try {
+      const u = new URL(s);
+      if (!/youtube\.com$|youtu\.be$/.test(u.hostname.replace(/^www\.|^m\./, ""))) return false;
+      return u.searchParams.has("list") || u.pathname.includes("/playlist");
+    } catch {
+      return false;
+    }
+  }
+
+  previewBtn.addEventListener("click", async () => {
+    const raw = (urlInput.value || "").trim();
+    clearError();
+    if (!isLikelyPlaylistUrl(raw)) {
+      showError("That doesn't look like a YouTube playlist URL.");
+      return;
+    }
+    previewBtn.disabled = true;
+    previewBtn.textContent = "Previewing…";
+    try {
+      const res = await STC.playlistPreview(raw);
+      if (!res || !res.ok) {
+        showError((res && res.error) || "Couldn't preview that playlist.");
+        return;
+      }
+      previewedUrl = raw;
+      previewedVideos = res.videos || [];
+      renderPreview(res);
+      showOnly(previewPanel);
+    } catch (e) {
+      showError(`Preview failed: ${e && e.message || e}`);
+    } finally {
+      previewBtn.disabled = false;
+      previewBtn.textContent = "Preview";
+    }
+  });
+
+  function renderPreview(res) {
+    previewListEl.innerHTML = "";
+    for (const v of (res.videos || [])) {
+      const row = document.createElement("div");
+      row.className = "pl-video";
+
+      const img = document.createElement("img");
+      img.className = "pl-thumb";
+      img.src = v.thumbnail_url || "";
+      img.alt = "";
+      row.appendChild(img);
+
+      const meta = document.createElement("div");
+      meta.className = "pl-meta";
+      const title = document.createElement("div");
+      title.className = "pl-title";
+      title.textContent = v.title || "(untitled)";
+      const dur = document.createElement("div");
+      dur.className = "pl-duration";
+      dur.textContent = fmtDuration(v.duration_seconds);
+      meta.appendChild(title);
+      meta.appendChild(dur);
+      row.appendChild(meta);
+
+      previewListEl.appendChild(row);
+    }
+
+    const cap = res.cap || PLAYLIST_CAP;
+    const total = res.total_in_playlist != null ? res.total_in_playlist : (res.videos || []).length;
+    if (total > cap) {
+      capNotice.textContent = `${cap} of ${total} videos — capped at ${cap}.`;
+      capNotice.classList.remove("hidden");
+    } else {
+      capNotice.classList.add("hidden");
+    }
+
+    startBtn.disabled = !(res.videos && res.videos.length);
+  }
+
+  // ---- start -----------------------------------------------------------
+  startBtn.addEventListener("click", async () => {
+    if (!previewedUrl) return;
+    startBtn.disabled = true;
+    startBtn.textContent = "Starting…";
+    try {
+      const res = await STC.playlistStart(previewedUrl);
+      if (!res || !res.ok || !res.job_id) {
+        showError((res && res.error) || "Couldn't start playlist yoink.");
+        showOnly(inputPanel);
+        return;
+      }
+      activeJobId = res.job_id;
+      // Preset progress view with the previewed total so the user sees
+      // "Video 1 of 10" immediately instead of a flicker.
+      progressFill.style.width = "0%";
+      progressText.textContent = `Queued — ${previewedVideos.length} videos`;
+      for (const chip of phaseRow.querySelectorAll(".pl-phase-chip")) {
+        chip.classList.remove("active", "done");
+      }
+      showOnly(progressPanel);
+      startPolling();
+    } catch (e) {
+      showError(`Start failed: ${e && e.message || e}`);
+      showOnly(inputPanel);
+    } finally {
+      startBtn.disabled = false;
+      startBtn.textContent = "Yoink playlist";
+    }
+  });
+
+  // ---- polling ---------------------------------------------------------
+  function startPolling() {
+    stopPolling();
+    pollOnce();
+    pollTimer = setInterval(pollOnce, POLL_MS);
+  }
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  async function pollOnce() {
+    if (!activeJobId) return;
+    let s;
+    try {
+      s = await STC.jobStatus(activeJobId);
+    } catch (e) {
+      // Transient network blip; let the next tick try again.
+      console.warn("[playlist] jobStatus failed", e);
+      return;
+    }
+    if (!s || !s.ok) {
+      stopPolling();
+      enterFailed((s && s.error) || "Status check failed.");
+      return;
+    }
+    renderProgress(s);
+
+    if (s.state === "completed") {
+      stopPolling();
+      resultPayload = s.result || null;
+      await onCompleted(resultPayload);
+    } else if (s.state === "cancelled") {
+      stopPolling();
+      showOnly(cancelledPanel);
+    } else if (s.state === "failed") {
+      stopPolling();
+      enterFailed(s.error || "Playlist yoink failed.");
+    }
+  }
+
+  function renderProgress(s) {
+    const total = s.videos_total || previewedVideos.length || PLAYLIST_CAP;
+    const done = s.videos_done || 0;
+    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    progressFill.style.width = `${pct}%`;
+
+    if (s.state === "queued") {
+      progressText.textContent = `Queued — ${total} videos`;
+    } else if (s.current_video) {
+      const title = s.current_video.title || "(untitled)";
+      const idx = s.current_video.index || (done + 1);
+      progressText.textContent = `Video ${idx} of ${total}: ${title}`;
+    } else if (s.state === "running") {
+      progressText.textContent = `${done} of ${total} videos done`;
+    }
+
+    // Phase chips: highlight the active phase, mark prior phases done.
+    const phases = ["metadata", "download", "screenshots", "comments"];
+    const activeIdx = phases.indexOf(s.current_video_phase);
+    for (const chip of phaseRow.querySelectorAll(".pl-phase-chip")) {
+      const phase = chip.dataset.phase;
+      const idx = phases.indexOf(phase);
+      chip.classList.remove("active", "done");
+      if (activeIdx < 0) continue;
+      if (idx < activeIdx) chip.classList.add("done");
+      else if (idx === activeIdx) chip.classList.add("active");
+    }
+  }
+
+  // ---- cancel ----------------------------------------------------------
+  cancelBtnEl.addEventListener("click", async () => {
+    if (!activeJobId) return;
+    cancelBtnEl.disabled = true;
+    cancelBtnEl.textContent = "Cancelling…";
+    try {
+      await STC.jobCancel(activeJobId);
+      // Don't switch UI here — let the next poll observe state=cancelled and
+      // flip the panel, so the transition stays driven by the backend.
+    } catch (e) {
+      console.warn("[playlist] cancel failed", e);
+    } finally {
+      // Reset button state in case poll hasn't flipped yet.
+      setTimeout(() => {
+        cancelBtnEl.disabled = false;
+        cancelBtnEl.textContent = "Cancel";
+      }, 1500);
+    }
+  });
+
+  // ---- completion ------------------------------------------------------
+  async function onCompleted(result) {
+    let copied = false;
+    const corpusText = (result && result.combined_md_text) || "";
+    if (corpusText) {
+      try {
+        await navigator.clipboard.writeText(corpusText);
+        copied = true;
+      } catch {
+        try {
+          const r = await chrome.runtime.sendMessage({
+            type: "copyToClipboard",
+            text: corpusText,
+          });
+          copied = !!(r && r.ok);
+        } catch { /* leave copied=false */ }
+      }
+    }
+
+    const videoCount = result && result.per_video ? result.per_video.length : 0;
+    const kb = corpusText ? (corpusText.length / 1024).toFixed(1) : "0";
+    doneSummary.textContent = copied
+      ? "Done — corpus copied to clipboard"
+      : "Done — clipboard blocked, open the folder";
+    doneMeta.textContent = `${videoCount} videos · ${kb} KB combined`;
+    showOnly(donePanel);
+
+    if (copied) showToast("Playlist yoinked! Paste in Claude or ChatGPT.");
+  }
+
+  openFolderBtn.addEventListener("click", async () => {
+    const path = resultPayload && resultPayload.combined_md_path;
+    if (!path) {
+      showToast("No folder path available.");
+      return;
+    }
+    try {
+      // openFolder is the existing server endpoint — in mock mode the server
+      // may not be running, in which case the toast below is the recovery.
+      const res = await STC.openFolder(path);
+      if (!res || res.ok === false) showToast("Couldn't open folder — server may be offline.");
+    } catch {
+      showToast("Couldn't open folder — server may be offline.");
+    }
+  });
+
+  startAnotherBtn.addEventListener("click", resetPlaylistUI);
+  cancelledRestartBtn.addEventListener("click", resetPlaylistUI);
+  failedRestartBtn.addEventListener("click", resetPlaylistUI);
+
+  function enterFailed(msg) {
+    failedMsg.textContent = msg;
+    showOnly(failedPanel);
+  }
+
+  // ---- boot ------------------------------------------------------------
+  // Start in single-video mode (default). Panel visibility is controlled
+  // entirely from here.
+  showOnly(inputPanel);
+})();

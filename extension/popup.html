@@ -235,6 +235,167 @@
       font-size: 11px;
     }
     .hidden { display: none; }
+
+    /* ---- v2 mode selector ------------------------------------------- */
+    .mode-selector {
+      display: flex;
+      gap: 4px;
+      margin: 10px 0 4px;
+      padding: 3px;
+      background: #2b2b2f;
+      border: 1px solid #3a3a3f;
+      border-radius: 5px;
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 5px 6px;
+      background: transparent;
+      color: #b0b0b0;
+      border: 1px solid transparent;
+      border-radius: 3px;
+      font-size: 11px;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+    .mode-btn:hover:not([disabled]):not(.active) {
+      background: #3a3a3f;
+      color: #e6e6e6;
+    }
+    .mode-btn.active {
+      background: #3a6e4a;
+      color: #d9ffe7;
+      border-color: #4a8a5a;
+      cursor: default;
+    }
+    .mode-btn[disabled] {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* ---- v2 playlist UI --------------------------------------------- */
+    .pl-preview-list {
+      margin-top: 8px;
+      max-height: 240px;
+      overflow-y: auto;
+      border: 1px solid #3a3a3f;
+      border-radius: 4px;
+    }
+    .pl-video {
+      display: flex;
+      gap: 8px;
+      padding: 6px;
+      border-bottom: 1px solid #2b2b2f;
+      align-items: center;
+    }
+    .pl-video:last-child { border-bottom: none; }
+    .pl-thumb {
+      width: 60px;
+      height: 34px;
+      flex-shrink: 0;
+      background: #3a3a3f;
+      border-radius: 2px;
+      object-fit: cover;
+    }
+    .pl-meta {
+      flex: 1;
+      min-width: 0;
+    }
+    .pl-title {
+      font-size: 12px;
+      color: #e6e6e6;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      line-height: 1.3;
+    }
+    .pl-duration {
+      font-size: 10px;
+      color: #888;
+      margin-top: 2px;
+    }
+    .pl-cap-notice {
+      margin-top: 8px;
+      padding: 6px 8px;
+      background: #3a2f1f;
+      color: #ffe6c9;
+      border: 1px solid #6a5a3a;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .pl-progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #2b2b2f;
+      border: 1px solid #3a3a3f;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .pl-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: #3a6e4a;
+      transition: width 0.3s ease;
+    }
+    .pl-progress-text {
+      font-size: 12px;
+      color: #e6e6e6;
+      margin-top: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pl-phase-row {
+      display: flex;
+      gap: 4px;
+      margin-top: 6px;
+    }
+    .pl-phase-chip {
+      flex: 1;
+      padding: 3px 4px;
+      background: #2b2b2f;
+      color: #888;
+      border: 1px solid #3a3a3f;
+      border-radius: 3px;
+      font-size: 10px;
+      text-align: center;
+      text-transform: capitalize;
+    }
+    .pl-phase-chip.active {
+      background: #3a6e4a;
+      color: #d9ffe7;
+      border-color: #4a8a5a;
+    }
+    .pl-phase-chip.done {
+      background: #1f2b22;
+      color: #57d983;
+      border-color: #3a6e4a;
+    }
+    .pl-done-icon {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #57d983;
+      color: #1f2b22;
+      text-align: center;
+      line-height: 14px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .pl-error {
+      margin-top: 8px;
+      padding: 6px 8px;
+      background: #3a1f1f;
+      color: #ffd9d9;
+      border: 1px solid #6a3a3a;
+      border-radius: 4px;
+      font-size: 11px;
+    }
   </style>
 </head>
 <body>
@@ -245,6 +406,21 @@
     <span id="status">Checking Yoink...</span>
     <a id="status-help" class="edit-prompts-link hidden" style="margin-left: auto;">Click for instructions →</a>
   </div>
+
+  <!-- v2 mode selector. Single-video mode is the default and behaves
+       identically to v1. Playlist mode swaps in the playlist UI below.
+       Channel and Niche are placeholders for future modes. -->
+  <div class="mode-selector" role="tablist">
+    <button class="mode-btn active" data-mode="single" role="tab" aria-selected="true">Single video</button>
+    <button class="mode-btn" data-mode="playlist" role="tab" aria-selected="false">Playlist</button>
+    <button class="mode-btn" disabled title="Coming soon">Channel</button>
+    <button class="mode-btn" disabled title="Coming soon">Niche</button>
+  </div>
+
+  <!-- ============================================================
+       SINGLE-VIDEO MODE  (v1 UI, byte-identical when mode=single)
+       ============================================================ -->
+  <div id="mode-single">
 
   <!-- Destination -->
   <div class="panel">
@@ -333,6 +509,70 @@
     <button id="clear-queue" class="secondary" disabled>Clear queue</button>
   </div>
 
+  </div><!-- /#mode-single -->
+
+  <!-- ============================================================
+       PLAYLIST MODE  (v2 — mocked in phase 1)
+       ============================================================ -->
+  <div id="mode-playlist" class="hidden">
+
+    <!-- Step 1: paste URL + preview -->
+    <div class="panel" id="pl-input-panel">
+      <div class="panel-title">YouTube playlist URL</div>
+      <input id="pl-url" type="text" placeholder="https://www.youtube.com/playlist?list=...">
+      <button id="pl-preview-btn" class="secondary">Preview</button>
+      <div id="pl-input-error" class="pl-error hidden"></div>
+    </div>
+
+    <!-- Step 2: preview list + start -->
+    <div class="panel hidden" id="pl-preview-panel">
+      <div class="panel-title">Videos to yoink</div>
+      <div id="pl-cap-notice" class="pl-cap-notice hidden"></div>
+      <div id="pl-preview-list" class="pl-preview-list"></div>
+      <button id="pl-start-btn" class="primary" disabled>Yoink playlist</button>
+    </div>
+
+    <!-- Step 3: progress while job runs -->
+    <div class="panel hidden" id="pl-progress-panel">
+      <div class="panel-title">Yoinking playlist</div>
+      <div class="pl-progress-bar"><div id="pl-progress-fill" class="pl-progress-fill"></div></div>
+      <div id="pl-progress-text" class="pl-progress-text">Queued…</div>
+      <div class="pl-phase-row" id="pl-phase-row">
+        <div class="pl-phase-chip" data-phase="metadata">metadata</div>
+        <div class="pl-phase-chip" data-phase="download">download</div>
+        <div class="pl-phase-chip" data-phase="screenshots">screenshots</div>
+        <div class="pl-phase-chip" data-phase="comments">comments</div>
+      </div>
+      <button id="pl-cancel-btn" class="danger">Cancel</button>
+    </div>
+
+    <!-- Step 4: completion -->
+    <div class="panel hidden" id="pl-done-panel">
+      <div class="panel-line">
+        <span class="pl-done-icon">✓</span>
+        <span id="pl-done-summary">Done — corpus copied to clipboard</span>
+      </div>
+      <div id="pl-done-meta" class="hint"></div>
+      <div class="button-row">
+        <button id="pl-open-folder-btn" class="secondary">Open folder</button>
+        <button id="pl-start-another-btn" class="primary">Start another</button>
+      </div>
+    </div>
+
+    <!-- Cancelled state -->
+    <div class="panel hidden" id="pl-cancelled-panel">
+      <div class="panel-line panel-muted">Cancelled.</div>
+      <button id="pl-cancelled-restart-btn" class="primary">Start another</button>
+    </div>
+
+    <!-- Error state -->
+    <div class="panel hidden" id="pl-failed-panel">
+      <div id="pl-failed-msg" class="pl-error">Playlist yoink failed.</div>
+      <button id="pl-failed-restart-btn" class="primary">Try again</button>
+    </div>
+
+  </div><!-- /#mode-playlist -->
+
   <div class="footer">
     Server: <code>http://127.0.0.1:5179</code><br>
     Click <b>Yoink</b> under any video, or right-click a YouTube
@@ -341,6 +581,7 @@
 
   <div id="popup-toast" class="toast"></div>
 
+  <script src="lib/mock-api.js"></script>
   <script src="lib/extract.js"></script>
   <script src="popup.js"></script>
 </body>
