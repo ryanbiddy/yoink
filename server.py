@@ -733,7 +733,7 @@ def _build_yoink_md(metadata: dict, url: str, entries: list, shots: list,
     parts.append("")
     parts.append("---")
     parts.append("")
-    parts.append("*[Yoinked with Yoink by ReplayRyan](https://yoink.video)*")
+    parts.append("*[Yoinked with Yoink by ReplayRyan](https://ryanbiddy.com/yoink)*")
     parts.append("")
 
     return "\n".join(parts)
@@ -985,7 +985,7 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     }
 
 
-INSTALL_HELP_URL = "https://yoink.video/install"
+INSTALL_HELP_URL = "https://ryanbiddy.com/yoink/install"
 
 
 def friendly_error(e: BaseException) -> str:

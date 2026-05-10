@@ -1,5 +1,7 @@
 # Yoink Progress Log
 
+> **Domain note:** This historical log references `yoink.video`. The current production URL is `ryanbiddy.com/yoink` (the `yoink.video` domain belongs to a different product).
+
 ## Weekend 1 — v1 build (this weekend)
 
 ### Done

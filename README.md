@@ -20,7 +20,7 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 - Thumbnail image
 - Channel context (subscriber count, recent videos)
 - Auto topic-classification into folders on disk
-- Editable prompt library for fast follow-up analysis
+- Built-in prompt library (11 starter prompts) for fast follow-up analysis
 - Two destination buttons: Send to Claude, Send to ChatGPT
 - Local-first, no cloud, no accounts, fully open source
 
@@ -53,9 +53,9 @@ If you're running from source, the file lives at `extension/prompts.json` and ch
 ]
 ```
 
-## Customizing topic folders
+## Topic folders
 
-Videos are auto-sorted into topic folders under `Desktop\Yoink\` based on keyword matches against `topics.json` in the project root. Edit that file to add, remove, or rename topics, or to tweak the keyword lists. New keywords apply on the next Yoink.
+Videos are auto-sorted into topic folders under `Desktop\Yoink\` based on keyword matches in an internal `topics.json` config that ships with the install. The topic list is fixed in v1; user-editable topics are on the v1.1 backlog so user edits won't get overwritten by the next installer release.
 
 ## Roadmap
 

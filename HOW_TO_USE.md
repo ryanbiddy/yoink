@@ -1,5 +1,7 @@
 # Yoink Build Kit
 
+> **Domain note:** This historical build doc references `yoink.video`. The current production URL is `ryanbiddy.com/yoink` (the `yoink.video` domain belongs to a different product). See `server.py`, `installer/yoink.iss`, or `docs/store-listing.md` for the current canonical URL.
+
 This is a build orchestration kit that runs the v1 weekend build through Claude Code.
 
 ## What's in here

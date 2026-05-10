@@ -16,8 +16,8 @@ The Web Store accepts up to 5 screenshots. The first one is the most important �
 - **Crop:** Full popup, no surrounding browser chrome. Trim the empty area below if the popup is shorter than 800px — pad with brand background, not white.
 - **Annotation:** Highlight the **Send to Claude** / **Send to ChatGPT** buttons (light box around both) and the **Quick Prompts** panel (light box). Caption: **"Pick a destination, copy a starter prompt."**
 
-## 3. The yoink.md file open in a markdown viewer
-- **Setup:** Open the generated `yoink.md` from a recent yoink in VS Code (with the markdown preview pane) or Obsidian. Pick a video with comments enabled and a real description so all sections show populated.
+## 3. The corpus markdown file open in a markdown viewer
+- **Setup:** Open the generated `<slug>.md` (named after the video, e.g. `karpathy-deep-dive-into-llms.md`) from a recent yoink in VS Code (with the markdown preview pane) or Obsidian. Pick a video with comments enabled and a real description so all sections show populated.
 - **Crop:** Show the metadata header at the top (channel, subs, views, duration, topic), then scroll-position-set so a transcript chunk and a screenshot section are visible side by side.
 - **Annotation:** None — let the structure speak. The viewer's syntax highlighting + the embedded screenshot in the preview pane is the message.
 

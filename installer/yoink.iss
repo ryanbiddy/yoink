@@ -16,7 +16,7 @@
 #define AppName       "Yoink"
 #define AppVersion    "1.0.0"
 #define AppPublisher  "ReplayRyan"
-#define AppURL        "https://yoink.video"
+#define AppURL        "https://ryanbiddy.com/yoink"
 
 [Setup]
 ; Stable AppId -- keep this fixed across releases so upgrades replace cleanly.

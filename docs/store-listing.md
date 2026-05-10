@@ -25,7 +25,7 @@ Click the **Yoink** button under any YouTube video and you get a single, structu
 - The thumbnail
 - Channel context — subscriber count and the channel's last 5 videos
 
-Paste it into Claude or ChatGPT. Ask "Decode the hook," "Outline the structure," "What would make this 2x better." Yoink ships with a starter prompt library you can edit in one click.
+Paste it into Claude or ChatGPT. Ask "Decode the hook," "Outline the structure," "What would make this 2x better." Yoink ships with a built-in 11-prompt starter library; user-editable prompts are on the v1.1 roadmap.
 
 ### Why people use Yoink
 
@@ -78,12 +78,12 @@ yoink@replayryan.com
 > **Note:** This support email must be deliverable before submission. If `yoink@replayryan.com` isn't yet set up as a forwarder, swap to a working personal address until it is.
 
 ## Privacy policy URL
-https://yoink.video/privacy
+https://ryanbiddy.com/yoink/privacy
 
 > **Note:** This URL must resolve before submission. The Web Store reviewer will fetch it. A short single-page policy stating "Yoink does not collect or transmit any user data — all extraction runs locally on the user's machine via the bundled helper server" is sufficient for v1.
 
 ## Website
-https://yoink.video
+https://ryanbiddy.com/yoink
 
 ## Permissions justification
 
@@ -107,9 +107,9 @@ Yoink has one purpose: extract a structured markdown corpus (transcript, screens
 
 - [ ] All 5 screenshots captured at 1280x800 (see `docs/screenshot-list.md`)
 - [ ] Promo tiles finalized in Figma (placeholders in `assets/store/`)
-- [ ] Privacy policy live at https://yoink.video/privacy
+- [ ] Privacy policy live at https://ryanbiddy.com/yoink/privacy
 - [ ] Support email yoink@replayryan.com receiving mail
-- [ ] yoink.video landing page live (or holding page is fine for v1)
+- [ ] ryanbiddy.com/yoink landing page live (or holding page is fine for v1)
 - [ ] Extension version in `manifest.json` matches release tag
 - [ ] Final `.zip` of the `extension/` folder produced (no dev artifacts)
 - [ ] Tested install + first yoink on a clean Chrome profile
