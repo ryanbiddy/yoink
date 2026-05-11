@@ -72,6 +72,7 @@ const ciKeyInput = document.getElementById("anthropic-key");
 const ciStatus = document.getElementById("ci-status");
 const ciSaveBtn = document.getElementById("ci-save-btn");
 const ciTestBtn = document.getElementById("ci-test-btn");
+const ciClearBtn = document.getElementById("ci-clear-btn");
 
 // ---- Suggested-video population -----------------------------------------
 function videoIdFromUrl(url) {
@@ -247,7 +248,7 @@ function setCIStatus(text, mode) {
 }
 
 function setCIControlsEnabled(enabled) {
-  for (const el of [ciEnabled, ciKeyInput, ciSaveBtn, ciTestBtn]) {
+  for (const el of [ciEnabled, ciKeyInput, ciSaveBtn, ciTestBtn, ciClearBtn]) {
     if (el) el.disabled = !enabled;
   }
   if (!enabled) setCIStatus("Start Yoink to manage settings.", "warn");
@@ -263,7 +264,7 @@ function renderCISettings(settings) {
       ? "Key saved - enter a new key to replace"
       : "sk-ant-...";
   }
-  setCIStatus(settings.anthropic_key_set ? "Key set" : "Key not set",
+  setCIStatus(settings.anthropic_key_set ? "Key set" : "Key not set.",
               settings.anthropic_key_set ? "ok" : "warn");
 }
 
@@ -332,6 +333,39 @@ if (ciTestBtn) {
       setCIStatus("Last test failed: server unavailable", "warn");
     } finally {
       ciTestBtn.disabled = false;
+    }
+  });
+}
+
+if (ciClearBtn) {
+  ciClearBtn.addEventListener("click", async () => {
+    if (!window.STC || !STC.updateSettings) return;
+    const confirmed = window.confirm(
+      "Clear the saved Anthropic API key from this computer?"
+    );
+    if (!confirmed) return;
+
+    setCIStatus("Clearing key...", null);
+    ciClearBtn.disabled = true;
+    try {
+      const res = await STC.updateSettings({
+        comment_intelligence_enabled: !!(ciEnabled && ciEnabled.checked),
+        anthropic_key: null,
+      });
+      if (!res || !res.ok) {
+        setCIStatus((res && res.error) || "Clear failed", "warn");
+        return;
+      }
+      if (ciKeyInput) {
+        ciKeyInput.value = "";
+        ciKeyInput.dataset.dirty = "false";
+        ciKeyInput.placeholder = "sk-ant-...";
+      }
+      setCIStatus("Key not set.", "warn");
+    } catch {
+      setCIStatus("Clear failed", "warn");
+    } finally {
+      ciClearBtn.disabled = false;
     }
   });
 }

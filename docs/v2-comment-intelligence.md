@@ -108,7 +108,7 @@ Failed validation:
 
 ## Model choice
 
-The first implementation uses `claude-haiku-4-5` through Anthropic's Messages API. It is the cheapest model expected to produce usable clustering and extraction quality for top-comment analysis. The model name is centralized in `server.py` as `ANTHROPIC_MODEL`.
+The first implementation uses `claude-haiku-4-5-20251001` through Anthropic's Messages API. It is the cheapest model expected to produce usable clustering and extraction quality for top-comment analysis. The model name is centralized in `server.py` as `ANTHROPIC_MODEL`.
 
 ## Invocation flow
 
@@ -187,7 +187,7 @@ The per-video JSON sidecar gets these fields:
 {
   "comment_intelligence_status": "not_run|fetched|failed",
   "comment_intelligence": {
-    "model": "claude-haiku-4-5",
+    "model": "claude-haiku-4-5-20251001",
     "top_themes": [
       {
         "label": "Learning by doing",
@@ -252,5 +252,4 @@ After analysis:
 ## Open questions
 
 - Should v2.1 encrypt `settings.json` with Windows DPAPI, or is OS account isolation enough for this solo-local tool?
-- Should the setup page add an explicit "Clear key" button, or is blank-and-save enough?
 - Should invalid-key detection surface a browser notification, or is setup.html status enough?

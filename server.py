@@ -79,7 +79,7 @@ SETTINGS_PATH = (
     if sys.platform == "win32" else HERE / "settings.json"
 )
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-haiku-4-5"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_VERSION = "2023-06-01"
 
 
