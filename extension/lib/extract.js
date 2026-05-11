@@ -270,9 +270,20 @@
     if (_useMock()) return global.MOCK_API.jobsList();
     return _getJson("/jobs");
   }
-  function getSettings() { return _getJson("/settings"); }
-  function updateSettings(settings) { return _postJson("/settings", settings || {}); }
+  // Settings helpers — originally landed via codex/v2-sprint2 without mock
+  // routing. Wrapped here so mock-mode (USE_MOCK_API = true) exercises the
+  // Comment Intelligence settings surface without needing the local server.
+  // Shapes mirror docs/v2-comment-intelligence.md.
+  function getSettings() {
+    if (_useMock()) return global.MOCK_API.getSettings();
+    return _getJson("/settings");
+  }
+  function updateSettings(settings) {
+    if (_useMock()) return global.MOCK_API.updateSettings(settings || {});
+    return _postJson("/settings", settings || {});
+  }
   function testAnthropicKey(anthropicKey) {
+    if (_useMock()) return global.MOCK_API.testAnthropicKey(anthropicKey);
     const body = {};
     if (typeof anthropicKey === "string") body.anthropic_key = anthropicKey;
     return _postJson("/settings/test-key", body);

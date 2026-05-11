@@ -476,6 +476,22 @@ document.getElementById("open-index").addEventListener("click", async (ev) => {
   }
 });
 
+// ---- Settings link (Sprint 2) ---------------------------------------------
+// Lives in the popup footer so it's visible in both single-video and playlist
+// modes. setup.html is the canonical settings surface (Codex's lane), so we
+// just open it in a new tab — never duplicate the form inside the popup.
+const openSettingsLink = document.getElementById("open-settings");
+if (openSettingsLink) {
+  openSettingsLink.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    chrome.tabs.create({
+      url: chrome.runtime.getURL("setup.html?source=popup"),
+      active: true,
+    });
+    window.close();
+  });
+}
+
 // ---- Boot -----------------------------------------------------------------
 ping();
 loadInterval();
@@ -547,6 +563,7 @@ window.addEventListener("unload", () => {
   const progressFill = document.getElementById("pl-progress-fill");
   const progressText = document.getElementById("pl-progress-text");
   const progressMessageEl = document.getElementById("pl-progress-message");
+  const progressCiEl = document.getElementById("pl-progress-ci");
   const progressWarningsEl = document.getElementById("pl-progress-warnings");
   const phaseRow = document.getElementById("pl-phase-row");
   const cancelBtnEl = document.getElementById("pl-cancel-btn");
@@ -567,11 +584,13 @@ window.addEventListener("unload", () => {
   const cancelledMetaEl = document.getElementById("pl-cancelled-meta");
   const cancelledMessageEl = document.getElementById("pl-cancelled-message");
   const cancelledWarningsEl = document.getElementById("pl-cancelled-warnings");
+  const cancelledFolderBtn = document.getElementById("pl-cancelled-folder-btn");
   const cancelledRestartBtn = document.getElementById("pl-cancelled-restart-btn");
 
   // Failed panel
   const failedPanel = document.getElementById("pl-failed-panel");
   const failedMsg = document.getElementById("pl-failed-msg");
+  const failedFolderBtn = document.getElementById("pl-failed-folder-btn");
   const failedRestartBtn = document.getElementById("pl-failed-restart-btn");
 
   // ---- State -----------------------------------------------------------
@@ -581,6 +600,20 @@ window.addEventListener("unload", () => {
   let pollTimer = null;
   let resultPayload = null;           // job.result on completion
   let lastJob = null;                 // most recent job object (any state)
+  // Sprint 2: one-time GET /settings snapshot. Only the
+  // comment_intelligence_enabled flag is consumed in the popup today; we
+  // cache the whole settings object so future read-only reads are free.
+  let cachedSettings = null;
+
+  // Fire-and-forget on IIFE boot. The CI indicator's render guards against
+  // cachedSettings still being null (treats it as "not enabled") so a slow
+  // settings response can't block the progress UI.
+  (async function loadSettings() {
+    try {
+      const res = await STC.getSettings();
+      if (res && res.ok && res.settings) cachedSettings = res.settings;
+    } catch { /* settings fetch is non-fatal */ }
+  })();
 
   // ---- mode switching --------------------------------------------------
   function setMode(mode) {
@@ -678,6 +711,7 @@ window.addEventListener("unload", () => {
     doneFailedListEl.classList.add("hidden");
     progressFill.style.width = "0%";
     progressText.textContent = "Queued…";
+    progressCiEl.classList.add("hidden");
     for (const chip of phaseRow.querySelectorAll(".pl-phase-chip")) {
       chip.classList.remove("active", "done");
     }
@@ -901,6 +935,14 @@ window.addEventListener("unload", () => {
       progressPlaylistTitleEl.classList.remove("hidden");
     }
 
+    // Sprint 2: Comment Intelligence indicator. Only when the current video
+    // is actually in the comments phase AND the user has CI enabled.
+    // Comments phase runs in the background; we tell the user it won't
+    // block playlist progress so they don't think the bar has stalled.
+    const ciEnabled = !!(cachedSettings && cachedSettings.comment_intelligence_enabled);
+    const inCommentsPhase = job.current_video_phase === "comments";
+    progressCiEl.classList.toggle("hidden", !(ciEnabled && inCommentsPhase));
+
     // Phase chips: highlight active, mark prior phases done.
     const activeIdx = PHASES.indexOf(job.current_video_phase);
     for (const chip of phaseRow.querySelectorAll(".pl-phase-chip")) {
@@ -1026,8 +1068,15 @@ window.addEventListener("unload", () => {
     doneFailedListEl.classList.remove("hidden");
   }
 
-  openFolderBtn.addEventListener("click", async () => {
-    const path = resultPayload && resultPayload.combined_md_path;
+  // Sprint 2: Open Folder targets job.session_folder, which the contract
+  // guarantees is populated from `queued` onwards and through every terminal
+  // state (cancelled, failed, completed). Fall back to result.combined_md_path
+  // only defensively (older job snapshots before Sprint 2).
+  async function openSessionFolder() {
+    const path =
+      (lastJob && lastJob.session_folder) ||
+      (resultPayload && resultPayload.combined_md_path) ||
+      null;
     if (!path) {
       showToast("No folder path available.");
       return;
@@ -1041,7 +1090,10 @@ window.addEventListener("unload", () => {
     } catch {
       showToast("Couldn't open folder — server may be offline.");
     }
-  });
+  }
+  openFolderBtn.addEventListener("click", openSessionFolder);
+  cancelledFolderBtn.addEventListener("click", openSessionFolder);
+  failedFolderBtn.addEventListener("click", openSessionFolder);
 
   startAnotherBtn.addEventListener("click", resetPlaylistUI);
   cancelledRestartBtn.addEventListener("click", resetPlaylistUI);

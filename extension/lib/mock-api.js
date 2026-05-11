@@ -21,6 +21,30 @@
   const PREVIEW_DELAY_MS = 500;
   const MOCK_PLAYLIST_TITLE = "Creator Strategy Interviews";
   const MOCK_PLAYLIST_UPLOADER = "Example Channel";
+  const MOCK_SESSION_FOLDER =
+    "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews";
+
+  // Persistent mock-settings state. Survives mock job lifecycle but is reset
+  // on popup close (module scope). Flip the constants below to test the
+  // enabled-CI path without going through updateSettings().
+  const MOCK_DEFAULT_SETTINGS = {
+    comment_intelligence_enabled: false,
+    anthropic_key_set: false,
+  };
+  // FLIP THIS to true to exercise the Comment Intelligence indicator path
+  // in mock mode without persisting a fake key through updateSettings().
+  const MOCK_FORCE_CI_ENABLED = false;
+  let mockSettings = {
+    comment_intelligence_enabled: MOCK_FORCE_CI_ENABLED
+      ? true
+      : MOCK_DEFAULT_SETTINGS.comment_intelligence_enabled,
+    anthropic_key_set: MOCK_FORCE_CI_ENABLED
+      ? true
+      : MOCK_DEFAULT_SETTINGS.anthropic_key_set,
+  };
+  // Keys are never echoed back. We store presence-only, mirroring the real
+  // server's `anthropic_key_set` boolean.
+  let mockSavedKeyPresent = mockSettings.anthropic_key_set;
   // Bake a per-video failure on video index 3 so the completion view's
   // per-video failure surface is always exercised in mock mode.
   const MOCK_FAILED_VIDEO_INDEX = 3;
@@ -68,6 +92,10 @@
       state: "queued",
       source_url: sourceUrl || "https://www.youtube.com/playlist?list=PLmock",
       playlist_title: MOCK_PLAYLIST_TITLE,
+      // session_folder is populated from `queued` onwards and stays
+      // populated through every terminal state (including cancelled and
+      // failed). See docs/v2-api.md "Field rules".
+      session_folder: MOCK_SESSION_FOLDER,
       videos_total: MOCK_TOTAL_VIDEOS,
       videos_done: 0,
       videos_failed: 0,
@@ -213,6 +241,75 @@
     return { ok: true, jobs: [_publicJob()] };
   }
 
+  // ---- Settings endpoints (docs/v2-comment-intelligence.md) -------------
+
+  function _settingsSnapshot() {
+    return {
+      comment_intelligence_enabled: mockSettings.comment_intelligence_enabled,
+      anthropic_key_set: mockSavedKeyPresent,
+    };
+  }
+
+  async function getSettings() {
+    return { ok: true, settings: _settingsSnapshot() };
+  }
+
+  // POST /settings rules per the contract:
+  // - comment_intelligence_enabled is required and must be boolean.
+  // - anthropic_key omitted -> existing saved key preserved.
+  // - anthropic_key non-empty string -> replaces saved key.
+  // - anthropic_key null or empty string -> clears saved key.
+  async function updateSettings(body) {
+    const b = body || {};
+    if (typeof b.comment_intelligence_enabled !== "boolean") {
+      return { ok: false, error: "comment_intelligence_enabled must be boolean" };
+    }
+    mockSettings.comment_intelligence_enabled = b.comment_intelligence_enabled;
+    if (Object.prototype.hasOwnProperty.call(b, "anthropic_key")) {
+      const k = b.anthropic_key;
+      if (k === null || k === "") {
+        mockSavedKeyPresent = false;
+      } else if (typeof k === "string" && k.length > 0) {
+        mockSavedKeyPresent = true;
+      }
+    }
+    // The contract requires the response to mirror GET /settings exactly.
+    return { ok: true, settings: _settingsSnapshot() };
+  }
+
+  // POST /settings/test-key — pretend to send "hi" to Anthropic. Accepts an
+  // unsaved key (in body.anthropic_key) or {} to test the saved key.
+  // Mock heuristic: keys starting with "sk-ant-" are considered valid; the
+  // saved-key path is "valid" iff there's a saved key.
+  async function testAnthropicKey(rawArg) {
+    let testKey = null;
+    if (typeof rawArg === "string") testKey = rawArg;
+    else if (rawArg && typeof rawArg.anthropic_key === "string") testKey = rawArg.anthropic_key;
+
+    let valid;
+    let error = null;
+    if (testKey != null) {
+      valid = testKey.startsWith("sk-ant-") && testKey.length > 12;
+      if (!valid) error = "invalid x-api-key";
+      // The contract says: "anthropic_key as a non-empty string replaces
+      // the saved key" — that's POST /settings semantics. For test-key
+      // alone the contract is silent on save semantics, but the success
+      // example flips anthropic_key_set to true, implying a successful
+      // test-key persists the key. Mirror that here.
+      if (valid) mockSavedKeyPresent = true;
+    } else {
+      // Test the saved key.
+      valid = mockSavedKeyPresent;
+      if (!valid) error = "no saved key";
+    }
+    return {
+      ok: true,
+      valid,
+      error,
+      settings: _settingsSnapshot(),
+    };
+  }
+
   // ---- State transition helpers -----------------------------------------
 
   function _applyRunningSnapshot(videosDone, elapsedSec) {
@@ -295,5 +392,8 @@
     jobStatus,
     jobCancel,
     jobsList,
+    getSettings,
+    updateSettings,
+    testAnthropicKey,
   };
 })(typeof self !== "undefined" ? self : globalThis);
