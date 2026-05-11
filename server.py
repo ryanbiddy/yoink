@@ -22,6 +22,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 import uuid
 from datetime import datetime
@@ -59,6 +60,7 @@ SUBPROCESS_KW = {"creationflags": CREATE_NO_WINDOW} if sys.platform == "win32" e
 # ---- Hardening limits (P1-3 / P1-4) ---------------------------------------
 MAX_BODY_BYTES = 64 * 1024            # 64KB POST body cap
 MAX_SCREENSHOTS = 200                  # cap per video
+PLAYLIST_VIDEO_CAP = 10                # v2 Playlist Mode first-ship cap
 LONG_VIDEO_SECONDS = 2 * 60 * 60       # 2 hours -- log warning above this
 YTDLP_TIMEOUT_SEC = 30 * 60            # main extract timeout
 COMMENTS_TIMEOUT_SEC = 5 * 60
@@ -203,6 +205,13 @@ _extract_lock = threading.Lock()
 # Serialize session.json mutations to keep the on-disk state consistent.
 _session_lock = threading.Lock()
 
+# v2 async jobs are intentionally in-memory for Sprint 1. They survive popup
+# close/reopen, but evaporate when the local helper process restarts. This is
+# the agreed v2 first-ship tradeoff; durable job recovery can come later if
+# playlist jobs become long enough that restart recovery matters.
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
 # Markers in yoink.md so the comments section can be replaced after the
 # background fetch finishes. HTML comments are invisible in rendered markdown.
 COMMENTS_START_MARK = "<!-- yoink:comments-start -->"
@@ -338,21 +347,90 @@ def _topic_folder_name(topic: str) -> str:
 # ---------------------------------------------------------------------------
 # Metadata, thumbnail, channel context, comments
 # ---------------------------------------------------------------------------
-def _fetch_metadata(url: str) -> dict:
+class PlaylistJobCancelled(Exception):
+    """Raised inside a playlist worker when the user cancels the job."""
+
+
+def _raise_if_cancelled(cancel_event: threading.Event | None):
+    if cancel_event is not None and cancel_event.is_set():
+        raise PlaylistJobCancelled("playlist job cancelled")
+
+
+def _terminate_process(proc: subprocess.Popen):
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+
+
+def _run_subprocess(cmd: list[str], *, cancel_event: threading.Event | None = None,
+                    timeout: int | float | None = None, check: bool = True,
+                    stdout=None, stderr=None, text: bool = False,
+                    encoding: str | None = None,
+                    errors: str | None = None) -> subprocess.CompletedProcess:
+    """Run a subprocess with optional cooperative cancellation.
+
+    v1 callers pass no cancel_event and see normal subprocess behavior. v2
+    playlist jobs pass a per-job Event so `/jobs/<id>/cancel` can terminate
+    the active yt-dlp/ffmpeg process instead of waiting for a long timeout.
+    """
+    _raise_if_cancelled(cancel_event)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+        encoding=encoding,
+        errors=errors,
+        **SUBPROCESS_KW,
+    )
+    started = time.monotonic()
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            _terminate_process(proc)
+            raise PlaylistJobCancelled("playlist job cancelled")
+        try:
+            out, err = proc.communicate(timeout=0.2)
+            break
+        except subprocess.TimeoutExpired:
+            if timeout is not None and (time.monotonic() - started) >= timeout:
+                _terminate_process(proc)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+
+    cp = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    if check and proc.returncode:
+        raise subprocess.CalledProcessError(
+            proc.returncode, cmd, output=out, stderr=err
+        )
+    return cp
+
+
+def _fetch_metadata(url: str, *,
+                    cancel_event: threading.Event | None = None) -> dict:
     """Single yt-dlp call that returns the full metadata blob without
     downloading the video. Used to derive the folder slug, fill the corpus
     header, and seed the thumbnail URL.
     """
-    raw = subprocess.check_output(
+    cp = _run_subprocess(
         [*YTDLP_CMD, "--dump-single-json", "--no-download", url],
-        text=True, stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+        cancel_event=cancel_event,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=COMMENTS_TIMEOUT_SEC,
-        **SUBPROCESS_KW,
     )
-    return json.loads(raw)
+    return json.loads(cp.stdout)
 
 
-def _download_thumbnail(metadata: dict, output_folder: Path) -> Path | None:
+def _download_thumbnail(metadata: dict, output_folder: Path, *,
+                        cancel_event: threading.Event | None = None) -> Path | None:
     """Download highest-resolution thumbnail to <folder>/thumbnail.jpg.
     Always re-encodes through ffmpeg so the output is jpg even if YouTube
     served webp/png. Returns the jpg path on success, None on failure.
@@ -380,10 +458,12 @@ def _download_thumbnail(metadata: dict, output_folder: Path) -> Path | None:
 
     jpg_path = output_folder / "thumbnail.jpg"
     try:
-        subprocess.run(
+        _run_subprocess(
             ["ffmpeg", "-loglevel", "error", "-y",
              "-i", str(raw_path), str(jpg_path)],
-            check=True, stderr=subprocess.PIPE, **SUBPROCESS_KW,
+            cancel_event=cancel_event,
+            check=True,
+            stderr=subprocess.PIPE,
         )
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or b"").decode("utf-8", errors="ignore").strip()
@@ -746,7 +826,9 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
                     *, open_explorer: bool = True,
                     metadata: dict | None = None,
                     topic: str | None = None,
-                    generate_paste: bool = True) -> dict:
+                    generate_paste: bool = True,
+                    cancel_event: threading.Event | None = None,
+                    phase_callback=None) -> dict:
     """Yoink a single video into output_folder.
 
     Steps:
@@ -764,7 +846,9 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     output_folder.mkdir(parents=True, exist_ok=True)
 
     if metadata is None:
-        metadata = _fetch_metadata(url)
+        if phase_callback:
+            phase_callback("metadata")
+        metadata = _fetch_metadata(url, cancel_event=cancel_event)
     if topic is None:
         topic = _classify_topic(metadata)
 
@@ -802,12 +886,14 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
         log.warning("could not write metadata.json: %s", e)
 
     # Thumbnail (best-effort; absence shouldn't fail the extraction).
-    _download_thumbnail(metadata, output_folder)
+    _download_thumbnail(metadata, output_folder, cancel_event=cancel_event)
 
     # Video + subs. Bounded to YTDLP_TIMEOUT_SEC so a stuck download doesn't
     # hold _extract_lock forever and block other yoinks.
     try:
-        subprocess.run(
+        if phase_callback:
+            phase_callback("download")
+        _run_subprocess(
             [
                 *YTDLP_CMD,
                 "--write-auto-subs",
@@ -818,11 +904,11 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
                 "-o", str(output_folder / "video.%(ext)s"),
                 url,
             ],
+            cancel_event=cancel_event,
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             timeout=YTDLP_TIMEOUT_SEC,
-            **SUBPROCESS_KW,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(
@@ -840,7 +926,9 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     shots_dir = output_folder / "screenshots"
     shots_dir.mkdir(exist_ok=True)
     try:
-        subprocess.run(
+        if phase_callback:
+            phase_callback("screenshots")
+        _run_subprocess(
             [
                 "ffmpeg", "-loglevel", "error", "-y",
                 "-i", str(video_file),
@@ -848,11 +936,11 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
                 "-q:v", "2",
                 str(shots_dir / "shot_%04d.jpg"),
             ],
+            cancel_event=cancel_event,
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             timeout=FFMPEG_TIMEOUT_SEC,
-            **SUBPROCESS_KW,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(
@@ -960,7 +1048,11 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
             paste_md = None
 
     # Comments fetch in background; updates the corpus file when done.
+    if phase_callback:
+        phase_callback("comments")
     _start_comments_thread(url, output_folder, yoink_path)
+    if phase_callback:
+        phase_callback("done")
 
     if open_explorer:
         try:
@@ -1029,6 +1121,8 @@ _YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 # ASCII-explicit so non-ASCII unicode word chars can't sneak through \w.
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_PLAYLIST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{2,}$")
+_JOB_ID_RE = re.compile(r"^job_[A-Za-z0-9_-]{1,96}$")
 
 
 def _normalize_youtube_url(raw: str) -> str | None:
@@ -1070,6 +1164,36 @@ def _normalize_youtube_url(raw: str) -> str | None:
     if not video_id:
         return None
     return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def _normalize_playlist_url(raw: str) -> str | None:
+    """Return canonical YouTube playlist URL, or None for unsupported input.
+
+    Accepts youtube.com/playlist?list=... and watch URLs that carry a list=
+    parameter. The returned URL intentionally drops any watch `v=` start
+    position; Playlist Mode always processes the selected playlist from the
+    first entry after the Python-side cap is applied.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        u = urlparse(raw if "://" in raw else "https://" + raw)
+    except ValueError:
+        return None
+    host = (u.hostname or "").lower()
+    if host not in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        return None
+    qs = parse_qs(u.query)
+    list_id = (qs.get("list") or [""])[0]
+    if not list_id or not _PLAYLIST_ID_RE.match(list_id):
+        return None
+    if u.path not in ("", "/", "/playlist", "/watch"):
+        return None
+    return f"https://www.youtube.com/playlist?list={list_id}"
+
+
+def _is_valid_job_id(s: str) -> bool:
+    return bool(s) and bool(_JOB_ID_RE.match(s))
 
 
 INDEX_FILENAME = "_all-yoinks-index.md"
@@ -1495,6 +1619,395 @@ def _build_corpus(session: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# v2 Playlist jobs
+# ---------------------------------------------------------------------------
+_IMAGE_REF_LINE_RE = re.compile(r"^\s*!\[[^\]]*\]\([^)]+\)\s*$", re.MULTILINE)
+
+
+def _strip_image_refs(md: str) -> str:
+    """Clipboard playlist corpora are text-only; on-disk corpora keep images."""
+    return _IMAGE_REF_LINE_RE.sub("", md)
+
+
+def _coerce_nullable_int(v):
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _video_url_from_flat_entry(e: dict) -> str | None:
+    vid = e.get("id")
+    if isinstance(vid, str) and _VIDEO_ID_RE.match(vid):
+        return f"https://www.youtube.com/watch?v={vid}"
+    raw = e.get("webpage_url") or e.get("url")
+    if isinstance(raw, str):
+        if _VIDEO_ID_RE.match(raw):
+            return f"https://www.youtube.com/watch?v={raw}"
+        return _normalize_youtube_url(raw)
+    return None
+
+
+def _fetch_playlist_preview(url: str) -> tuple[dict | None, str | None, int]:
+    """Return (playlist, error, status_code) for a validated playlist URL."""
+    normalized = _normalize_playlist_url(url)
+    if not normalized:
+        return None, "playlist URL invalid", 400
+    try:
+        cp = _run_subprocess(
+            [*YTDLP_CMD, "--dump-single-json", "--flat-playlist", normalized],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=COMMENTS_TIMEOUT_SEC,
+        )
+        data = json.loads(cp.stdout)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            json.JSONDecodeError, OSError) as e:
+        log.warning("playlist preview failed: %s", e)
+        return None, "yt-dlp playlist preview failed", 200
+
+    entries = [e for e in (data.get("entries") or []) if isinstance(e, dict)]
+    videos = []
+    for e in entries:
+        video_url = _video_url_from_flat_entry(e)
+        if not video_url:
+            continue
+        videos.append({
+            "index": len(videos) + 1,
+            "id": e.get("id") if isinstance(e.get("id"), str) else None,
+            "url": video_url,
+            "title": e.get("title") or "(untitled)",
+            "channel": e.get("channel") or e.get("uploader"),
+            "duration_seconds": _coerce_nullable_int(e.get("duration")),
+        })
+
+    if not videos:
+        return None, "playlist has no videos", 200
+
+    raw_count = data.get("playlist_count") or data.get("n_entries")
+    video_count = _coerce_nullable_int(raw_count) or len(videos)
+    truncated = video_count > PLAYLIST_VIDEO_CAP or len(videos) > PLAYLIST_VIDEO_CAP
+    capped = videos[:PLAYLIST_VIDEO_CAP]
+    for i, v in enumerate(capped, 1):
+        v["index"] = i
+    warnings = ["playlist exceeds cap"] if truncated else []
+    message = (
+        f"Playlist has {video_count} videos -- yoinking the first {PLAYLIST_VIDEO_CAP}."
+        if truncated else
+        f"Playlist has {len(capped)} video{'s' if len(capped) != 1 else ''}."
+    )
+    playlist = {
+        "url": normalized,
+        "title": data.get("title") or "YouTube Playlist",
+        "uploader": data.get("uploader") or data.get("channel"),
+        "video_count": video_count,
+        "cap": PLAYLIST_VIDEO_CAP,
+        "will_process_count": len(capped),
+        "truncated": truncated,
+        "message": message,
+        "warnings": warnings,
+        "videos": capped,
+    }
+    return playlist, None, 200
+
+
+def _make_job_id() -> str:
+    return f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
+def _public_job(job: dict) -> dict:
+    return {
+        "id": job["id"],
+        "kind": job["kind"],
+        "state": job["state"],
+        "source_url": job["source_url"],
+        "playlist_title": job.get("playlist_title"),
+        "videos_total": job["videos_total"],
+        "videos_done": job["videos_done"],
+        "videos_failed": job["videos_failed"],
+        "current_video": job.get("current_video"),
+        "current_video_phase": job.get("current_video_phase"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+        "completed_at": job.get("completed_at"),
+        "error": job.get("error"),
+        "result": job.get("result"),
+        "warnings": list(job.get("warnings") or []),
+        "message": job.get("message"),
+    }
+
+
+def _get_public_job(job_id: str) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return _public_job(job) if job else None
+
+
+def _update_job(job_id: str, **updates) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return None
+        job.update(updates)
+        job["updated_at"] = _now_iso()
+        return _public_job(job)
+
+
+def _job_cancel_event(job_id: str) -> threading.Event | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return job.get("_cancel_event") if job else None
+
+
+def _list_public_jobs() -> list[dict]:
+    with _jobs_lock:
+        jobs = [_public_job(j) for j in _jobs.values()]
+    return sorted(jobs, key=lambda j: j.get("updated_at") or "", reverse=True)
+
+
+def _unique_child_folder(parent: Path, preferred: str, used: set[str]) -> Path:
+    base = slugify(preferred) or "video"
+    slug = base
+    n = 2
+    while slug in used or (parent / slug).exists():
+        slug = f"{base}_{n}"
+        n += 1
+    used.add(slug)
+    return parent / slug
+
+
+def _build_playlist_corpus(job: dict, *, text_only: bool) -> str:
+    title = job.get("playlist_title") or "YouTube Playlist"
+    parts = [
+        f"# Playlist Corpus: {title}",
+        f"**Source:** {job.get('source_url')}",
+        f"**Yoinked:** {_now_iso()}",
+        f"**Videos:** {job.get('videos_done', 0)} succeeded, {job.get('videos_failed', 0)} failed",
+        "",
+        "---",
+        "",
+    ]
+
+    for item in job.get("per_video", []):
+        title = item.get("title") or "(unknown)"
+        url = item.get("url") or ""
+        parts.append(f"## Video {item.get('index')}: {title}")
+        parts.append(f"Source: {url}")
+        if item.get("folder"):
+            parts.append(f"Local folder: {item.get('folder')}")
+        parts.append("")
+
+        if not item.get("ok"):
+            parts.append(f"> _Failed: {item.get('error') or 'unknown error'}_")
+        else:
+            md_path = item.get("md_path")
+            try:
+                body = Path(md_path).read_text(encoding="utf-8")
+                body = re.sub(r"^# .+\n", "", body, count=1)
+                body = re.sub(r"^(\*\*[^*]+:\*\*[^\n]*\n)+", "", body)
+                if text_only:
+                    body = _strip_image_refs(body)
+                parts.append(_demote_headings(body.strip()))
+            except (OSError, TypeError) as e:
+                parts.append(f"> _Failed to read corpus file: {e}_")
+
+        parts.append("")
+        parts.append("---")
+        parts.append("")
+
+    return "\n".join(parts)
+
+
+def _finish_job_cancelled(job_id: str):
+    _update_job(
+        job_id,
+        state="cancelled",
+        current_video=None,
+        current_video_phase=None,
+        completed_at=_now_iso(),
+        error=None,
+        result=None,
+        message="Playlist job cancelled. Partial outputs were left on disk.",
+    )
+
+
+def _playlist_worker(job_id: str):
+    public = _get_public_job(job_id)
+    if not public:
+        return
+    cancel_event = _job_cancel_event(job_id)
+    used_slugs: set[str] = set()
+
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        videos = list(job.get("_videos") or []) if job else []
+        interval = int(job.get("_interval") or 30) if job else 30
+        folder = Path(job.get("_folder")) if job else SESSIONS_ROOT / job_id
+    folder.mkdir(parents=True, exist_ok=True)
+
+    if cancel_event is not None and cancel_event.is_set():
+        _finish_job_cancelled(job_id)
+        return
+
+    _update_job(
+        job_id,
+        state="running",
+        started_at=_now_iso(),
+        message=f"Yoinking video 1 of {len(videos)}." if videos else "Starting playlist job.",
+    )
+
+    per_video = []
+    videos_done = 0
+    videos_failed = 0
+
+    try:
+        for v in videos:
+            _raise_if_cancelled(cancel_event)
+            idx = int(v.get("index") or (len(per_video) + 1))
+            current = {
+                "index": idx,
+                "title": v.get("title") or "(untitled)",
+                "url": v.get("url"),
+            }
+            _update_job(
+                job_id,
+                current_video=current,
+                current_video_phase="metadata",
+                message=f"Yoinking video {idx} of {len(videos)}.",
+            )
+
+            try:
+                metadata = _fetch_metadata(v["url"], cancel_event=cancel_event)
+                title = metadata.get("title") or current["title"] or "Untitled"
+                current["title"] = title
+                target = _unique_child_folder(folder, title, used_slugs)
+                _update_job(job_id, current_video=current)
+
+                def phase_cb(phase: str, *, _job_id=job_id):
+                    _update_job(_job_id, current_video_phase=phase)
+
+                with _extract_lock:
+                    _raise_if_cancelled(cancel_event)
+                    result = _run_extraction(
+                        v["url"],
+                        interval,
+                        target,
+                        open_explorer=False,
+                        metadata=metadata,
+                        topic="Playlist",
+                        generate_paste=False,
+                        cancel_event=cancel_event,
+                        phase_callback=phase_cb,
+                    )
+
+                corpus_path = _resolve_corpus_path(target)
+                item = {
+                    "index": idx,
+                    "title": result.get("title") or title,
+                    "url": v["url"],
+                    "folder": str(target),
+                    "md_path": str(corpus_path) if corpus_path else None,
+                    "json_path": str(target / f"{target.name}.json"),
+                    "ok": True,
+                    "error": None,
+                }
+                per_video.append(item)
+                videos_done += 1
+                _update_job(
+                    job_id,
+                    videos_done=videos_done,
+                    current_video_phase="done",
+                    message=f"Finished video {idx} of {len(videos)}.",
+                )
+            except PlaylistJobCancelled:
+                raise
+            except BaseException as e:
+                msg = friendly_error(e)
+                log.error("playlist job %s video %d failed: %s", job_id, idx, msg)
+                per_video.append({
+                    "index": idx,
+                    "title": current.get("title") or "(untitled)",
+                    "url": v.get("url"),
+                    "folder": None,
+                    "md_path": None,
+                    "json_path": None,
+                    "ok": False,
+                    "error": msg,
+                })
+                videos_failed += 1
+                _update_job(
+                    job_id,
+                    videos_failed=videos_failed,
+                    message=f"Video {idx} failed; continuing.",
+                )
+
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job:
+                job["per_video"] = per_video
+                job["videos_done"] = videos_done
+                job["videos_failed"] = videos_failed
+
+        _raise_if_cancelled(cancel_event)
+        if videos_done == 0:
+            _update_job(
+                job_id,
+                state="failed",
+                current_video=None,
+                current_video_phase=None,
+                completed_at=_now_iso(),
+                error="playlist extraction failed: zero videos succeeded",
+                result=None,
+                message="Playlist failed: zero videos succeeded.",
+            )
+            return
+
+        with _jobs_lock:
+            job = dict(_jobs[job_id])
+        disk_md = _build_playlist_corpus(job, text_only=False)
+        clipboard_md = _build_playlist_corpus(job, text_only=True)
+        corpus_path = folder / "corpus.md"
+        corpus_path.write_text(disk_md, encoding="utf-8")
+        _raise_if_cancelled(cancel_event)
+        result = {
+            "combined_md_path": str(corpus_path),
+            "combined_md_text": clipboard_md,
+            "per_video": per_video,
+        }
+        _update_job(
+            job_id,
+            state="completed",
+            current_video=None,
+            current_video_phase=None,
+            completed_at=_now_iso(),
+            error=None,
+            result=result,
+            message="Playlist complete.",
+        )
+    except PlaylistJobCancelled:
+        log.info("playlist job %s cancelled", job_id)
+        _finish_job_cancelled(job_id)
+    except BaseException as e:
+        msg = friendly_error(e)
+        log.error("playlist job %s failed: %s", job_id, msg)
+        _update_job(
+            job_id,
+            state="failed",
+            current_video=None,
+            current_video_phase=None,
+            completed_at=_now_iso(),
+            error=msg,
+            result=None,
+            message="Playlist failed.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
@@ -1661,6 +2174,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_recent()
         if bare == "/open-folder":
             return self._handle_open_folder()
+        if bare == "/jobs":
+            return self._handle_jobs_list()
+        if bare.startswith("/jobs/"):
+            return self._handle_job_get(bare)
         log.info("GET %s -> 404", self.path)
         self._send_json(404, {"ok": False, "error": "not found"})
 
@@ -1808,6 +2325,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(e.status, {"ok": False, "error": e.message})
 
         bare = self.path.split("?", 1)[0]
+        if bare == "/playlist/preview":
+            return self._handle_playlist_preview(body)
+        if bare == "/playlist/start":
+            return self._handle_playlist_start(body)
+        if bare.startswith("/jobs/") and bare.endswith("/cancel"):
+            return self._handle_job_cancel(bare)
         if bare == "/extract":
             return self._handle_extract(body)
         if bare == "/session/start":
@@ -1853,6 +2376,143 @@ class Handler(BaseHTTPRequestHandler):
         if not normalized:
             return None, None, "URL must be a youtube.com or youtu.be video link"
         return normalized, interval, None
+
+    def _validate_playlist_body(self, body: dict, *, require_interval: bool = False):
+        raw = body.get("url")
+        if not isinstance(raw, str):
+            return None, None, "playlist URL invalid", 400
+        url = _normalize_playlist_url(raw.strip())
+        if not url:
+            return None, None, "playlist URL invalid", 400
+        interval = body.get("interval", 30)
+        if require_interval or "interval" in body:
+            try:
+                interval = int(interval)
+            except (TypeError, ValueError):
+                return None, None, "interval must be an integer", 400
+            if not (5 <= interval <= 300):
+                return None, None, "interval must be between 5 and 300", 400
+        return url, interval, None, 200
+
+    def _job_id_from_path(self, bare: str, *, cancel: bool = False):
+        prefix = "/jobs/"
+        suffix = "/cancel" if cancel else ""
+        if not bare.startswith(prefix) or (suffix and not bare.endswith(suffix)):
+            return None, "job id invalid", 400
+        job_id = bare[len(prefix):]
+        if suffix:
+            job_id = job_id[:-len(suffix)]
+        job_id = job_id.strip("/")
+        if not _is_valid_job_id(job_id):
+            return None, "job id invalid", 400
+        return job_id, None, 200
+
+    # ---- /playlist/preview ----
+    def _handle_playlist_preview(self, body: dict):
+        url, _interval, err, status = self._validate_playlist_body(body)
+        if err:
+            return self._send_json(status, {"ok": False, "error": err})
+        playlist, err, status = _fetch_playlist_preview(url)
+        if err:
+            return self._send_json(status, {"ok": False, "error": err})
+        self._send_json(200, {"ok": True, "playlist": playlist})
+
+    # ---- /playlist/start ----
+    def _handle_playlist_start(self, body: dict):
+        url, interval, err, status = self._validate_playlist_body(body, require_interval=True)
+        if err:
+            return self._send_json(status, {"ok": False, "error": err})
+        playlist, err, status = _fetch_playlist_preview(url)
+        if err:
+            return self._send_json(status, {"ok": False, "error": err})
+
+        job_id = _make_job_id()
+        title = playlist.get("title") or "YouTube Playlist"
+        folder_slug = slugify(title) or "playlist"
+        folder = _session_folder(folder_slug)
+        if folder.exists():
+            folder = _session_folder(f"{folder_slug}_{job_id[-6:]}")
+        cancel_event = threading.Event()
+        now = _now_iso()
+        job = {
+            "id": job_id,
+            "kind": "playlist",
+            "state": "queued",
+            "source_url": playlist["url"],
+            "playlist_title": title,
+            "videos_total": playlist["will_process_count"],
+            "videos_done": 0,
+            "videos_failed": 0,
+            "current_video": None,
+            "current_video_phase": None,
+            "started_at": None,
+            "updated_at": now,
+            "completed_at": None,
+            "error": None,
+            "result": None,
+            "warnings": playlist.get("warnings") or [],
+            "message": playlist.get("message"),
+            "per_video": [],
+            "_videos": playlist["videos"],
+            "_interval": interval,
+            "_folder": str(folder),
+            "_cancel_event": cancel_event,
+        }
+        worker = threading.Thread(
+            target=_playlist_worker,
+            args=(job_id,),
+            name=f"playlist-{job_id}",
+            daemon=True,
+        )
+        job["_thread"] = worker
+        with _jobs_lock:
+            _jobs[job_id] = job
+            public = _public_job(job)
+        worker.start()
+        self._send_json(200, {"ok": True, "job_id": job_id, "job": public})
+
+    # ---- /jobs/<id> ----
+    def _handle_job_get(self, bare: str):
+        job_id, err, status = self._job_id_from_path(bare)
+        if err:
+            return self._send_json(status, {"ok": False, "error": err})
+        job = _get_public_job(job_id)
+        if not job:
+            return self._send_json(404, {"ok": False, "error": "job not found"})
+        self._send_json(200, {"ok": True, "job": job})
+
+    # ---- /jobs/<id>/cancel ----
+    def _handle_job_cancel(self, bare: str):
+        job_id, err, status = self._job_id_from_path(bare, cancel=True)
+        if err:
+            return self._send_json(status, {"ok": False, "error": err})
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if not job:
+                return self._send_json(404, {"ok": False, "error": "job not found"})
+            if job.get("state") in ("completed", "cancelled", "failed"):
+                return self._send_json(200, {"ok": False, "error": "job is already finished"})
+            event = job.get("_cancel_event")
+            if not isinstance(event, threading.Event):
+                return self._send_json(200, {"ok": False, "error": "job cancel failed"})
+            event.set()
+            now = _now_iso()
+            job.update({
+                "state": "cancelled",
+                "current_video": None,
+                "current_video_phase": None,
+                "completed_at": now,
+                "error": None,
+                "result": None,
+                "message": "Playlist job cancelled. Partial outputs were left on disk.",
+                "updated_at": now,
+            })
+            public = _public_job(job)
+        self._send_json(200, {"ok": True, "job": public})
+
+    # ---- /jobs ----
+    def _handle_jobs_list(self):
+        self._send_json(200, {"ok": True, "jobs": _list_public_jobs()})
 
     def _handle_extract(self, body: dict):
         url, interval, err = self._validate_url_interval(body)

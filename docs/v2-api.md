@@ -93,6 +93,7 @@ Notes:
 
 - Playlist Mode is hard-capped at 10 videos for the first v2 ship.
 - A playlist with more than 10 videos is not an error. The response truncates `videos` to 10 and includes `warnings: ["playlist exceeds cap"]`.
+- `channel` and `duration_seconds` are nullable. Preview uses fast `yt-dlp --flat-playlist` data and does not hydrate each video individually.
 - Clients should show `message` when present.
 
 Example request:
@@ -458,6 +459,8 @@ Auth: `X-Yoink-Token` required.
 
 Request body: none.
 
+Persistence: jobs are in-memory only for the first v2 ship. `/jobs` recovers state after popup close/reopen while the helper process is alive, but all job state evaporates when the Yoink helper restarts.
+
 Success response: HTTP 200
 
 ```json
@@ -557,7 +560,7 @@ States:
 | `running` | Job is actively extracting one playlist video. | `started_at`, `updated_at`, `current_video`, `current_video_phase`. `result` is null. |
 | `completed` | Job finished and produced a combined corpus. | `completed_at`, `result`, `videos_done`. `current_video`, `current_video_phase`, and `error` are null. |
 | `cancelled` | User requested cancellation. Current subprocess was aborted if one was active. Partial outputs remain on disk. | `completed_at`, `videos_done`, `videos_failed`, `message`. `result` is null. |
-| `failed` | Job cannot continue because of a fatal playlist-level or worker-level error. | `completed_at`, `error`. `result` is null unless an implementation later chooses to expose partial results. |
+| `failed` | Job cannot produce a useful playlist corpus. This happens for fatal playlist-level/worker-level errors, or when every selected video failed. Individual per-video failures do not fail the job if at least one video succeeds. | `completed_at`, `error`. `result` is null unless an implementation later chooses to expose partial results. |
 
 Allowed transitions:
 
@@ -604,7 +607,7 @@ Field rules:
 - `state` is always one of `queued`, `running`, `completed`, `cancelled`, `failed`.
 - `videos_total` is the number of videos selected for processing after the 10-video cap.
 - `videos_done` counts successful per-video extractions.
-- `videos_failed` counts per-video failures if the chosen failure policy allows continuing.
+- `videos_failed` counts per-video failures. Playlist jobs continue after private, age-restricted, geoblocked, deleted, or otherwise failed individual videos.
 - `current_video` is `{ "title": string, "index": number, "url": string }` while running, otherwise null.
 - `current_video_phase` is one of `metadata`, `download`, `screenshots`, `comments`, `done`, or null.
 - `started_at`, `updated_at`, `completed_at` are ISO timestamps, null when not applicable.
@@ -642,6 +645,7 @@ Important transport rule:
 - Per-video corpora on disk retain screenshot references.
 - The combined `.md` at `combined_md_path` also retains screenshot references.
 - Only the clipboard string is stripped, because a 10-video playlist with v1 screenshot density can exceed 5 MB and overflow practical Claude/ChatGPT context.
+- Comments follow the v1 fire-and-forget behavior. The combined corpus snapshots each per-video `.md` when the job completes; comments may still show the pending placeholder there. The per-video files continue updating as background comment fetches finish.
 
 Clients must not infer that `combined_md_text` is byte-for-byte identical to the file at `combined_md_path`.
 
@@ -697,15 +701,17 @@ Handled application errors and warnings:
 | `yt-dlp playlist preview failed` | error | Show failure; user can retry or choose another playlist. |
 | `playlist has no videos` | error | Show failure; do not start job. |
 | `playlist exceeds cap` | warning | Not fatal. Show that only the first 10 videos will be processed. |
+| `playlist extraction failed: zero videos succeeded` | error | Show failure. Per-video outputs may exist on disk, but there is no completed combined clipboard payload. |
 | `job is already finished` | error | Cancel button should stop showing after terminal states. |
 | `job cancel failed` | error | Show failure; keep polling job state. |
 
 ## Open questions
 
-1. **Per-video failure policy.** If video 4 of 10 fails because it is private, age-restricted, geoblocked, or deleted, should the job continue to video 5 and complete with `videos_failed > 0`, or should the whole job transition to `failed` immediately? The status shape supports either; product decision needed before implementation.
+None for Sprint 1 after Ryan sign-off.
 
-2. **Job persistence across server restarts.** Should `/jobs` recover queued/running/completed job state after the helper restarts, or is in-memory state acceptable for v2 first ship? The popup recovery use case is clear for close/reopen; restart recovery is undecided.
+Resolved decisions:
 
-3. **Comments phase semantics.** v1 fetches comments asynchronously after the per-video response. For playlist jobs, should `current_video_phase: "comments"` mean the job waits for comments before moving to the next video, or should comments keep arriving in the background while the job advances? Waiting gives a more complete combined corpus; background keeps playlists faster.
-
-4. **Preview metadata completeness.** The preview shape includes `duration_seconds` and `channel` as useful UI fields, but yt-dlp flat playlist data may omit them for some playlist types. Should clients treat those fields as nullable, or should the server do slower per-video metadata hydration during preview?
+- Per-video failures continue. The job completes if at least one video succeeds and fails only when zero selected videos succeed or the playlist itself cannot preview/start.
+- Job state is in-memory only.
+- Comments remain background/fire-and-forget.
+- Preview `channel` and `duration_seconds` fields are nullable.
