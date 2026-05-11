@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime
@@ -73,6 +74,13 @@ FFMPEG_TIMEOUT_SEC = 15 * 60
 # this via /token (gated by chrome-extension:// origin) on first launch
 # and includes it in X-Yoink-Token on every subsequent request.
 TOKEN_PATH = HERE / "token.txt"
+SETTINGS_PATH = (
+    Path(os.environ.get("LOCALAPPDATA", str(HERE))) / "Yoink" / "settings.json"
+    if sys.platform == "win32" else HERE / "settings.json"
+)
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_MODEL = "claude-haiku-4-5"
+ANTHROPIC_VERSION = "2023-06-01"
 
 
 def _load_or_create_token() -> str:
@@ -126,6 +134,174 @@ def _check_token_rate_limit() -> bool:
         kept.append(now)
         _token_request_times[:] = kept
     return True
+
+
+# ---- Settings (v2 BYO Anthropic key) --------------------------------------
+def _default_settings() -> dict:
+    return {
+        "comment_intelligence_enabled": False,
+        # Plaintext by product decision for v2. Treat settings.json like any
+        # other local credential store; encryption is v2.1+.
+        "anthropic_key": "",
+        "anthropic_key_invalid": False,
+        "updated_at": None,
+    }
+
+
+def _read_settings() -> dict:
+    with _settings_lock:
+        data = _default_settings()
+        if SETTINGS_PATH.exists():
+            try:
+                raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    data.update(raw)
+            except (OSError, json.JSONDecodeError) as e:
+                log.warning("settings read failed: %s", e)
+        data["comment_intelligence_enabled"] = bool(
+            data.get("comment_intelligence_enabled")
+        )
+        if not isinstance(data.get("anthropic_key"), str):
+            data["anthropic_key"] = ""
+        data["anthropic_key_invalid"] = bool(data.get("anthropic_key_invalid"))
+        return data
+
+
+def _write_settings(data: dict) -> None:
+    with _settings_lock:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(SETTINGS_PATH)
+        try:
+            os.chmod(SETTINGS_PATH, 0o600)
+        except OSError:
+            pass
+
+
+def _public_settings(data: dict | None = None) -> dict:
+    data = data or _read_settings()
+    key = data.get("anthropic_key") if isinstance(data.get("anthropic_key"), str) else ""
+    return {
+        "comment_intelligence_enabled": bool(data.get("comment_intelligence_enabled")),
+        "anthropic_key_set": bool(key and not data.get("anthropic_key_invalid")),
+    }
+
+
+def _mark_anthropic_key_invalid() -> None:
+    data = _read_settings()
+    data["anthropic_key"] = ""
+    data["anthropic_key_invalid"] = True
+    data["updated_at"] = _now_iso()
+    try:
+        _write_settings(data)
+    except OSError as e:
+        log.warning("settings invalid-key write failed: %s", e)
+
+
+def _anthropic_key_available() -> str | None:
+    data = _read_settings()
+    key = data.get("anthropic_key") or ""
+    if not data.get("comment_intelligence_enabled"):
+        return None
+    if data.get("anthropic_key_invalid"):
+        return None
+    return key.strip() or None
+
+
+class AnthropicAPIError(Exception):
+    def __init__(self, status: int | None, reason: str):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+def _short_reason(reason: str, *, api_key: str | None = None) -> str:
+    msg = re.sub(r"\s+", " ", str(reason or "unknown error")).strip()
+    if api_key:
+        msg = msg.replace(api_key, "[redacted]")
+    return msg[:180] if len(msg) > 180 else msg
+
+
+def _anthropic_error_reason(status: int, body: str) -> str:
+    try:
+        parsed = json.loads(body or "{}")
+        err = parsed.get("error") if isinstance(parsed, dict) else None
+        if isinstance(err, dict) and err.get("message"):
+            return str(err.get("message"))
+        if isinstance(parsed, dict) and parsed.get("message"):
+            return str(parsed.get("message"))
+    except json.JSONDecodeError:
+        pass
+    return f"Anthropic API returned HTTP {status}"
+
+
+def _anthropic_messages(api_key: str, *, system: str, user: str,
+                        max_tokens: int = 800) -> dict:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+    }
+    req = urllib.request.Request(
+        ANTHROPIC_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise AnthropicAPIError(
+            e.code,
+            _short_reason(_anthropic_error_reason(e.code, body), api_key=api_key),
+        ) from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise AnthropicAPIError(
+            None,
+            _short_reason(f"network error contacting Anthropic: {e}", api_key=api_key),
+        ) from None
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise AnthropicAPIError(None, f"Anthropic returned invalid JSON: {e}") from None
+    if not isinstance(parsed, dict):
+        raise AnthropicAPIError(None, "Anthropic returned an unexpected response")
+    return parsed
+
+
+def _anthropic_text(resp: dict) -> str:
+    pieces = []
+    for part in resp.get("content") or []:
+        if isinstance(part, dict) and part.get("type") == "text":
+            pieces.append(str(part.get("text") or ""))
+    text = "\n".join(pieces).strip()
+    if not text:
+        raise AnthropicAPIError(None, "Anthropic returned an empty response")
+    return text
+
+
+def _test_anthropic_key(api_key: str) -> tuple[bool, str | None, int | None]:
+    if not api_key:
+        return False, "API key is required", None
+    try:
+        _anthropic_messages(
+            api_key,
+            system="Reply with exactly: ok",
+            user="hi",
+            max_tokens=4,
+        )
+        return True, None, None
+    except AnthropicAPIError as e:
+        return False, e.reason, e.status
 
 # Invoke yt-dlp via the same interpreter rather than relying on PATH. pip's
 # --user install puts yt-dlp.exe in %APPDATA%\Python\PythonXX\Scripts which
@@ -211,11 +387,14 @@ _session_lock = threading.Lock()
 # playlist jobs become long enough that restart recovery matters.
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+_settings_lock = threading.Lock()
 
 # Markers in yoink.md so the comments section can be replaced after the
 # background fetch finishes. HTML comments are invisible in rendered markdown.
 COMMENTS_START_MARK = "<!-- yoink:comments-start -->"
 COMMENTS_END_MARK = "<!-- yoink:comments-end -->"
+CI_START_MARK = "<!-- yoink:comment-intelligence-start -->"
+CI_END_MARK = "<!-- yoink:comment-intelligence-end -->"
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +788,284 @@ def _update_sidecar_comments(output_folder: Path, comments: list | None,
         log.warning("sidecar comments update: write failed (%s)", e)
 
 
+def _extract_json_object(text: str) -> dict:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise AnthropicAPIError(None, "Comment Intelligence returned no JSON object")
+    try:
+        parsed = json.loads(cleaned[start:end + 1])
+    except json.JSONDecodeError as e:
+        raise AnthropicAPIError(None, f"Comment Intelligence returned invalid JSON: {e}") from None
+    if not isinstance(parsed, dict):
+        raise AnthropicAPIError(None, "Comment Intelligence returned an unexpected shape")
+    return parsed
+
+
+def _clean_text(value, *, limit: int = 500) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def _as_int(value, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_comment_analysis(data: dict) -> dict:
+    themes = []
+    for item in (data.get("top_themes") or [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        quotes = [
+            _clean_text(q, limit=280)
+            for q in (item.get("quotes") or item.get("representative_quotes") or [])[:2]
+            if _clean_text(q)
+        ]
+        themes.append({
+            "label": _clean_text(item.get("label"), limit=80) or "Theme",
+            "description": _clean_text(item.get("description"), limit=500),
+            "count": _as_int(item.get("count"), 0),
+            "quotes": quotes,
+        })
+
+    products = []
+    for item in (data.get("mentioned_products_tools") or data.get("products_tools") or [])[:20]:
+        if not isinstance(item, dict):
+            continue
+        name = _clean_text(item.get("name") or item.get("label"), limit=100)
+        if not name:
+            continue
+        products.append({
+            "name": name,
+            "frequency": _as_int(item.get("frequency") or item.get("count"), 1),
+        })
+
+    disagreements = []
+    for item in (data.get("notable_disagreements") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        samples = [
+            _clean_text(q, limit=280)
+            for q in (item.get("sample_comments") or item.get("quotes") or [])[:2]
+            if _clean_text(q)
+        ]
+        disagreements.append({
+            "description": _clean_text(item.get("description"), limit=500),
+            "sample_comments": samples,
+        })
+
+    return {
+        "model": ANTHROPIC_MODEL,
+        "top_themes": themes,
+        "mentioned_products_tools": products,
+        "notable_disagreements": disagreements,
+    }
+
+
+def analyze_comments(comments: list[dict], *, api_key: str | None = None) -> dict:
+    """Vendor-neutral internal interface for comment analysis.
+
+    Future MCP can wrap this function directly as `analyze_comments`; the
+    Anthropic-specific plumbing is intentionally hidden behind it.
+    """
+    key = (api_key or _anthropic_key_available() or "").strip()
+    if not key:
+        raise AnthropicAPIError(None, "Anthropic API key not configured")
+
+    shaped = []
+    for c in comments[:50]:
+        text = _clean_text(c.get("text"), limit=1200)
+        if not text:
+            continue
+        shaped.append({
+            "author": _clean_text(c.get("author"), limit=80),
+            "text": text,
+            "like_count": _as_int(c.get("like_count"), 0),
+        })
+    if len(shaped) < 5:
+        raise AnthropicAPIError(None, "not enough comments to analyze")
+
+    system = (
+        "You analyze YouTube comments for a creator-operator. Return valid JSON "
+        "only. Do not include markdown. Cluster comments by meaning, identify "
+        "mentioned products/tools, and describe substantive disagreements."
+    )
+    user = (
+        "Analyze these top YouTube comments. Return this exact JSON shape:\n"
+        "{\n"
+        '  "top_themes": [{"label": string, "description": string, "count": number, "quotes": [string]}],\n'
+        '  "mentioned_products_tools": [{"name": string, "frequency": number}],\n'
+        '  "notable_disagreements": [{"description": string, "sample_comments": [string]}]\n'
+        "}\n\n"
+        "Rules: 3-5 top_themes, 1-2 quotes per theme, up to 20 products/tools, "
+        "and 1-3 disagreements. If a category has no signal, return an empty "
+        "array for that category.\n\n"
+        f"Comments JSON:\n{json.dumps(shaped, ensure_ascii=False)}"
+    )
+    try:
+        resp = _anthropic_messages(key, system=system, user=user, max_tokens=1200)
+        return _normalize_comment_analysis(_extract_json_object(_anthropic_text(resp)))
+    except AnthropicAPIError as e:
+        if e.status == 401:
+            _mark_anthropic_key_invalid()
+        raise
+
+
+def _render_comment_intelligence(analysis: dict) -> str:
+    out = ["## Comment Intelligence", ""]
+
+    out.append("### Top Themes")
+    themes = analysis.get("top_themes") or []
+    if not themes:
+        out.append("- None found.")
+    for t in themes:
+        count = t.get("count") or 0
+        out.append(
+            f"- **{t.get('label') or 'Theme'}** ({count} comments): "
+            f"{t.get('description') or 'No description.'}"
+        )
+        for q in t.get("quotes") or []:
+            out.append(f"  - \"{q}\"")
+    out.append("")
+
+    out.append("### Mentioned Products/Tools")
+    products = analysis.get("mentioned_products_tools") or []
+    if not products:
+        out.append("- None found.")
+    for p in products:
+        out.append(f"- **{p.get('name')}** ({p.get('frequency') or 1})")
+    out.append("")
+
+    out.append("### Notable Disagreements")
+    disagreements = analysis.get("notable_disagreements") or []
+    if not disagreements:
+        out.append("- None found.")
+    for d in disagreements:
+        out.append(f"- {d.get('description') or 'Disagreement noted.'}")
+        for q in d.get("sample_comments") or []:
+            out.append(f"  - \"{q}\"")
+    return "\n".join(out).rstrip()
+
+
+def _replace_comment_intelligence_section(yoink_path: Path, body: str) -> None:
+    block = f"{CI_START_MARK}\n{body.rstrip()}\n{CI_END_MARK}"
+    try:
+        text = yoink_path.read_text(encoding="utf-8")
+    except OSError as e:
+        log.warning("could not read corpus to update Comment Intelligence: %s", e)
+        return
+
+    pattern = re.compile(
+        re.escape(CI_START_MARK) + r".*?" + re.escape(CI_END_MARK),
+        re.DOTALL,
+    )
+    if pattern.search(text):
+        new_text = pattern.sub(block, text, count=1)
+    elif COMMENTS_END_MARK in text:
+        new_text = text.replace(COMMENTS_END_MARK, COMMENTS_END_MARK + "\n\n" + block, 1)
+    else:
+        new_text = text.rstrip() + "\n\n" + block + "\n"
+
+    tmp = yoink_path.with_suffix(".md.tmp")
+    try:
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(yoink_path)
+    except OSError as e:
+        log.warning("could not write Comment Intelligence section: %s", e)
+
+
+def _update_sidecar_comment_intelligence(output_folder: Path, *,
+                                         status: str,
+                                         analysis: dict | None = None,
+                                         error: str | None = None) -> None:
+    sidecar_path = output_folder / f"{output_folder.name}.json"
+    if not sidecar_path.exists():
+        return
+    try:
+        data = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("sidecar CI update: read failed (%s)", e)
+        return
+    data["comment_intelligence_status"] = status
+    data["comment_intelligence"] = analysis
+    data["comment_intelligence_error"] = error
+    data["comment_intelligence_updated_at"] = _now_iso()
+    tmp = sidecar_path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(sidecar_path)
+    except OSError as e:
+        log.warning("sidecar CI update: write failed (%s)", e)
+
+
+def _comment_intelligence_worker(output_folder: Path, yoink_path: Path,
+                                 comments: list[dict]) -> None:
+    if len(comments) < 5:
+        return
+    try:
+        analysis = analyze_comments(comments)
+        _replace_comment_intelligence_section(
+            yoink_path,
+            _render_comment_intelligence(analysis),
+        )
+        _update_sidecar_comment_intelligence(
+            output_folder,
+            status="fetched",
+            analysis=analysis,
+        )
+        log.info("Comment Intelligence appended to %s", yoink_path)
+    except AnthropicAPIError as e:
+        reason = _short_reason(e.reason)
+        if e.status == 401:
+            log.warning("Comment Intelligence skipped: Anthropic API key invalid")
+        else:
+            log.warning("Comment Intelligence failed: %s", reason)
+        body = "## Comment Intelligence\n\n" + (
+            f"Comment Intelligence: analysis failed - {reason}"
+        )
+        _replace_comment_intelligence_section(yoink_path, body)
+        _update_sidecar_comment_intelligence(
+            output_folder,
+            status="failed",
+            analysis=None,
+            error=reason,
+        )
+    except Exception as e:
+        reason = _short_reason(str(e))
+        log.warning("Comment Intelligence crashed: %s", reason)
+        body = f"## Comment Intelligence\n\nComment Intelligence: analysis failed - {reason}"
+        _replace_comment_intelligence_section(yoink_path, body)
+        _update_sidecar_comment_intelligence(
+            output_folder,
+            status="failed",
+            analysis=None,
+            error=reason,
+        )
+
+
+def _start_comment_intelligence_thread(output_folder: Path, yoink_path: Path,
+                                       comments: list[dict]) -> threading.Thread | None:
+    if len(comments) < 5 or not _anthropic_key_available():
+        return None
+    t = threading.Thread(
+        target=_comment_intelligence_worker,
+        args=(output_folder, yoink_path, comments[:50]),
+        name=f"comment-intelligence-{output_folder.name}",
+        daemon=True,
+    )
+    t.start()
+    return t
+
+
 def _comments_worker(url: str, output_folder: Path, yoink_path: Path,
                      max_comments: int = 100, top_n: int = 50) -> None:
     """Background-thread body. Fetches comments via yt-dlp, rewrites the
@@ -650,12 +1107,10 @@ def _comments_worker(url: str, output_folder: Path, yoink_path: Path,
             key=lambda c: c.get("like_count") or 0,
             reverse=True,
         )[:top_n]
+        shaped_comments = [_shape_comment_for_sidecar(c) for c in ranked]
         _replace_comments_section(yoink_path, _render_comments(ranked))
-        _update_sidecar_comments(
-            output_folder,
-            [_shape_comment_for_sidecar(c) for c in ranked],
-            "fetched",
-        )
+        _update_sidecar_comments(output_folder, shaped_comments, "fetched")
+        _start_comment_intelligence_thread(output_folder, yoink_path, shaped_comments)
         log.info("comments appended to %s (%d of %d)",
                  yoink_path, len(ranked), len(raw_comments))
     except subprocess.CalledProcessError as e:
@@ -1017,6 +1472,9 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
             "channel_context": channel_ctx,
             "comments": None,
             "comments_status": "pending",
+            "comment_intelligence": None,
+            "comment_intelligence_status": "not_run",
+            "comment_intelligence_error": None,
         }
         sidecar_path = output_folder / f"{output_folder.name}.json"
         sidecar_path.write_text(
@@ -1727,6 +2185,7 @@ def _public_job(job: dict) -> dict:
         "state": job["state"],
         "source_url": job["source_url"],
         "playlist_title": job.get("playlist_title"),
+        "session_folder": job.get("session_folder"),
         "videos_total": job["videos_total"],
         "videos_done": job["videos_done"],
         "videos_failed": job["videos_failed"],
@@ -2166,6 +2625,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_session_list()
         if bare == "/session/active":
             return self._handle_session_active()
+        if bare == "/settings":
+            return self._handle_settings_get()
         if bare == "/open-prompts":
             return self._handle_open_prompts()
         if bare == "/open-index":
@@ -2207,6 +2668,77 @@ class Handler(BaseHTTPRequestHandler):
             log.info("GET /token rate-limited")
             return self._send_json(429, {"ok": False, "error": "too many requests"})
         self._send_json(200, {"ok": True, "token": TOKEN})
+
+    # ---- /settings ----
+    def _handle_settings_get(self):
+        self._send_json(200, {"ok": True, "settings": _public_settings()})
+
+    def _handle_settings_post(self, body: dict):
+        if "comment_intelligence_enabled" not in body:
+            return self._send_json(400, {
+                "ok": False,
+                "error": "comment_intelligence_enabled required",
+            })
+        enabled = body.get("comment_intelligence_enabled")
+        if not isinstance(enabled, bool):
+            return self._send_json(400, {
+                "ok": False,
+                "error": "comment_intelligence_enabled must be boolean",
+            })
+        if "anthropic_key" in body and body.get("anthropic_key") is not None:
+            if not isinstance(body.get("anthropic_key"), str):
+                return self._send_json(400, {
+                    "ok": False,
+                    "error": "anthropic_key must be a string or null",
+                })
+            if len(body.get("anthropic_key")) > 4096:
+                return self._send_json(400, {
+                    "ok": False,
+                    "error": "anthropic_key is too long",
+                })
+
+        data = _read_settings()
+        data["comment_intelligence_enabled"] = enabled
+        if "anthropic_key" in body:
+            raw_key = body.get("anthropic_key")
+            if raw_key is None or raw_key.strip() == "":
+                data["anthropic_key"] = ""
+            else:
+                data["anthropic_key"] = raw_key.strip()
+            data["anthropic_key_invalid"] = False
+        data["updated_at"] = _now_iso()
+        try:
+            _write_settings(data)
+        except OSError as e:
+            log.warning("settings write failed: %s", e)
+            return self._send_json(200, {"ok": False, "error": "settings write failed"})
+        self._send_json(200, {"ok": True, "settings": _public_settings(data)})
+
+    # ---- /settings/test-key ----
+    def _handle_settings_test_key(self, body: dict):
+        provided = "anthropic_key" in body and body.get("anthropic_key") is not None
+        if provided and not isinstance(body.get("anthropic_key"), str):
+            return self._send_json(400, {
+                "ok": False,
+                "error": "anthropic_key must be a string or null",
+            })
+        if provided:
+            key = body.get("anthropic_key").strip()
+            using_stored_key = False
+        else:
+            data = _read_settings()
+            key = (data.get("anthropic_key") or "").strip()
+            using_stored_key = True
+
+        ok, reason, status = _test_anthropic_key(key)
+        if not ok and status == 401 and using_stored_key:
+            _mark_anthropic_key_invalid()
+        self._send_json(200, {
+            "ok": True,
+            "valid": ok,
+            "error": None if ok else reason,
+            "settings": _public_settings(),
+        })
 
     # ---- /recent ----
     # Walk Desktop\Yoink\<topic>\<slug>\ and return the 3 most recent video
@@ -2325,6 +2857,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(e.status, {"ok": False, "error": e.message})
 
         bare = self.path.split("?", 1)[0]
+        if bare == "/settings":
+            return self._handle_settings_post(body)
+        if bare == "/settings/test-key":
+            return self._handle_settings_test_key(body)
         if bare == "/playlist/preview":
             return self._handle_playlist_preview(body)
         if bare == "/playlist/start":
@@ -2440,6 +2976,7 @@ class Handler(BaseHTTPRequestHandler):
             "state": "queued",
             "source_url": playlist["url"],
             "playlist_title": title,
+            "session_folder": str(folder),
             "videos_total": playlist["will_process_count"],
             "videos_done": 0,
             "videos_failed": 0,

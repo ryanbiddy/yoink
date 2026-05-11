@@ -328,6 +328,59 @@
       margin-bottom: 12px;
     }
 
+    .settings-grid {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--yoink-white);
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .toggle-row input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--yoink-accent);
+    }
+    .field-label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-mute);
+      margin-bottom: 6px;
+    }
+    .input {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--bg-inset);
+      color: var(--yoink-white);
+      font-family: inherit;
+      font-size: 14px;
+    }
+    .input:focus {
+      outline: none;
+      border-color: var(--yoink-accent);
+      box-shadow: 0 0 0 3px var(--yoink-accent-soft);
+    }
+    .settings-status {
+      color: var(--text-mute);
+      font-size: 13px;
+      min-height: 20px;
+    }
+    .settings-status.ok { color: var(--ok); }
+    .settings-status.warn { color: var(--warn); }
+    .settings-link {
+      color: var(--yoink-accent);
+      font-size: 13px;
+      text-decoration: none;
+    }
+    .settings-link:hover { text-decoration: underline; }
+
     .footer {
       margin-top: 36px;
       font-size: 12px;
@@ -469,11 +522,41 @@
       <p class="sub">Or click the orange <b>Yoink</b> button under any YouTube video.</p>
     </section>
 
+    <section id="comment-intelligence" class="step">
+      <div class="step-head">
+        <div class="step-num"><span class="step-num-text">AI</span></div>
+        <h2>Comment Intelligence</h2>
+      </div>
+      <p>Optionally analyze the top YouTube comments with your own Anthropic API key. Normal Yoink works without this.</p>
+      <p class="sub">Your key is stored locally on your machine. Treat it like any other credential - protect your system.</p>
+
+      <div class="settings-grid">
+        <label class="toggle-row">
+          <input id="ci-enabled" type="checkbox">
+          <span>Enable Comment Intelligence</span>
+        </label>
+
+        <label>
+          <span class="field-label">Anthropic API key</span>
+          <input id="anthropic-key" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+        </label>
+
+        <div id="ci-status" class="settings-status">Start Yoink to manage settings.</div>
+
+        <div class="button-row">
+          <button id="ci-save-btn" class="button" type="button">Save settings</button>
+          <button id="ci-test-btn" class="button ghost" type="button">Test key</button>
+          <a class="settings-link" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get an Anthropic API key</a>
+        </div>
+      </div>
+    </section>
+
     <div class="footer">
       Made by ReplayRyan · <a href="https://ryanbiddy.com/yoink" target="_blank" rel="noopener">ryanbiddy.com/yoink</a>
     </div>
   </div>
 
+  <script src="lib/extract.js"></script>
   <script src="setup.js"></script>
 </body>
 </html>

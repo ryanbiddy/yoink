@@ -270,6 +270,13 @@
     if (_useMock()) return global.MOCK_API.jobsList();
     return _getJson("/jobs");
   }
+  function getSettings() { return _getJson("/settings"); }
+  function updateSettings(settings) { return _postJson("/settings", settings || {}); }
+  function testAnthropicKey(anthropicKey) {
+    const body = {};
+    if (typeof anthropicKey === "string") body.anthropic_key = anthropicKey;
+    return _postJson("/settings/test-key", body);
+  }
 
   function startSession(name) { return _postJson("/session/start", { name: name || "" }); }
   function addToSession(sessionId, url, interval) {
@@ -397,5 +404,8 @@
     jobStatus,
     jobCancel,
     jobsList,
+    getSettings,
+    updateSettings,
+    testAnthropicKey,
   };
 })(typeof self !== "undefined" ? self : globalThis);

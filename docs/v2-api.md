@@ -162,6 +162,7 @@ Success response: HTTP 200
     "state": "queued",
     "source_url": "https://www.youtube.com/playlist?list=PLexample123",
     "playlist_title": "Creator Strategy Interviews",
+    "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
     "videos_total": 10,
     "videos_done": 0,
     "videos_failed": 0,
@@ -227,6 +228,7 @@ Example response:
     "state": "queued",
     "source_url": "https://www.youtube.com/playlist?list=PLexample123",
     "playlist_title": "Creator Strategy Interviews",
+    "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
     "videos_total": 10,
     "videos_done": 0,
     "videos_failed": 0,
@@ -262,6 +264,7 @@ Success response: HTTP 200
     "state": "running",
     "source_url": "https://www.youtube.com/playlist?list=PLexample123",
     "playlist_title": "Creator Strategy Interviews",
+    "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
     "videos_total": 10,
     "videos_done": 3,
     "videos_failed": 0,
@@ -314,6 +317,7 @@ Example response:
     "state": "completed",
     "source_url": "https://www.youtube.com/playlist?list=PLexample123",
     "playlist_title": "Creator Strategy Interviews",
+    "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
     "videos_total": 10,
     "videos_done": 10,
     "videos_failed": 0,
@@ -364,6 +368,7 @@ Success response: HTTP 200
     "state": "cancelled",
     "source_url": "https://www.youtube.com/playlist?list=PLexample123",
     "playlist_title": "Creator Strategy Interviews",
+    "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
     "videos_total": 10,
     "videos_done": 3,
     "videos_failed": 0,
@@ -435,6 +440,7 @@ Example response:
     "state": "cancelled",
     "source_url": "https://www.youtube.com/playlist?list=PLexample123",
     "playlist_title": "Creator Strategy Interviews",
+    "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
     "videos_total": 10,
     "videos_done": 3,
     "videos_failed": 0,
@@ -473,6 +479,7 @@ Success response: HTTP 200
       "state": "running",
       "source_url": "https://www.youtube.com/playlist?list=PLexample123",
       "playlist_title": "Creator Strategy Interviews",
+      "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
       "videos_total": 10,
       "videos_done": 3,
       "videos_failed": 0,
@@ -521,6 +528,7 @@ Example response:
       "state": "completed",
       "source_url": "https://www.youtube.com/playlist?list=PLexample123",
       "playlist_title": "Creator Strategy Interviews",
+      "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
       "videos_total": 10,
       "videos_done": 10,
       "videos_failed": 0,
@@ -556,7 +564,7 @@ States:
 
 | State | Meaning | Required populated fields |
 |---|---|---|
-| `queued` | Job has been accepted but no video is currently extracting. | `id`, `kind`, `state`, `source_url`, `videos_total`, `videos_done`, `videos_failed`, `updated_at`. `started_at`, `completed_at`, `current_video`, `current_video_phase`, `error`, and `result` are null. |
+| `queued` | Job has been accepted but no video is currently extracting. | `id`, `kind`, `state`, `source_url`, `session_folder`, `videos_total`, `videos_done`, `videos_failed`, `updated_at`. `started_at`, `completed_at`, `current_video`, `current_video_phase`, `error`, and `result` are null. |
 | `running` | Job is actively extracting one playlist video. | `started_at`, `updated_at`, `current_video`, `current_video_phase`. `result` is null. |
 | `completed` | Job finished and produced a combined corpus. | `completed_at`, `result`, `videos_done`. `current_video`, `current_video_phase`, and `error` are null. |
 | `cancelled` | User requested cancellation. Current subprocess was aborted if one was active. Partial outputs remain on disk. | `completed_at`, `videos_done`, `videos_failed`, `message`. `result` is null. |
@@ -583,6 +591,7 @@ Every job object returned by `/playlist/start`, `/jobs/<id>`, `/jobs/<id>/cancel
   "state": "queued|running|completed|cancelled|failed",
   "source_url": "https://www.youtube.com/playlist?list=PLexample123",
   "playlist_title": "Creator Strategy Interviews",
+  "session_folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews",
   "videos_total": 10,
   "videos_done": 0,
   "videos_failed": 0,
@@ -605,6 +614,7 @@ Every job object returned by `/playlist/start`, `/jobs/<id>`, `/jobs/<id>/cancel
 Field rules:
 
 - `state` is always one of `queued`, `running`, `completed`, `cancelled`, `failed`.
+- `session_folder` is the absolute path to the playlist session folder on disk. Populated from `queued` onwards. Stays populated through every state including `cancelled` and `failed`.
 - `videos_total` is the number of videos selected for processing after the 10-video cap.
 - `videos_done` counts successful per-video extractions.
 - `videos_failed` counts per-video failures. Playlist jobs continue after private, age-restricted, geoblocked, deleted, or otherwise failed individual videos.
@@ -646,6 +656,7 @@ Important transport rule:
 - The combined `.md` at `combined_md_path` also retains screenshot references.
 - Only the clipboard string is stripped, because a 10-video playlist with v1 screenshot density can exceed 5 MB and overflow practical Claude/ChatGPT context.
 - Comments follow the v1 fire-and-forget behavior. The combined corpus snapshots each per-video `.md` when the job completes; comments may still show the pending placeholder there. The per-video files continue updating as background comment fetches finish.
+- Comment Intelligence follows the same background semantics. If a per-video `.md` already has a Comment Intelligence section when the playlist job transitions to `completed`, that section is included in both the on-disk combined corpus and the text-only clipboard payload. If the analysis finishes later, it appears only in the per-video `.md`.
 
 Clients must not infer that `combined_md_text` is byte-for-byte identical to the file at `combined_md_path`.
 

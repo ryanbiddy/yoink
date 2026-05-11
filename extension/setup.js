@@ -67,6 +67,11 @@ const suggestedThumb = document.getElementById("suggested-thumb");
 const suggestedTitle = document.getElementById("suggested-title");
 const suggestedByline = document.getElementById("suggested-byline");
 const yoinkSuggestedBtn = document.getElementById("yoink-suggested-btn");
+const ciEnabled = document.getElementById("ci-enabled");
+const ciKeyInput = document.getElementById("anthropic-key");
+const ciStatus = document.getElementById("ci-status");
+const ciSaveBtn = document.getElementById("ci-save-btn");
+const ciTestBtn = document.getElementById("ci-test-btn");
 
 // ---- Suggested-video population -----------------------------------------
 function videoIdFromUrl(url) {
@@ -216,6 +221,8 @@ function onServerUp() {
   setStatus("running", "Yoink is running ✓");
   statusInstructions.classList.add("hidden");
   updateHeader("running");
+  setCIControlsEnabled(true);
+  loadCISettings();
   markDone(step3);
   if (step4.classList.contains("hidden")) {
     step4.classList.remove("hidden");
@@ -227,6 +234,106 @@ function onServerUp() {
   } else {
     markCurrent(step4);
   }
+}
+
+// ---- Comment Intelligence settings --------------------------------------
+let ciLoaded = false;
+
+function setCIStatus(text, mode) {
+  if (!ciStatus) return;
+  ciStatus.textContent = text;
+  ciStatus.classList.remove("ok", "warn");
+  if (mode) ciStatus.classList.add(mode);
+}
+
+function setCIControlsEnabled(enabled) {
+  for (const el of [ciEnabled, ciKeyInput, ciSaveBtn, ciTestBtn]) {
+    if (el) el.disabled = !enabled;
+  }
+  if (!enabled) setCIStatus("Start Yoink to manage settings.", "warn");
+}
+
+function renderCISettings(settings) {
+  if (!settings) return;
+  if (ciEnabled) ciEnabled.checked = !!settings.comment_intelligence_enabled;
+  if (ciKeyInput) {
+    ciKeyInput.value = "";
+    ciKeyInput.dataset.dirty = "false";
+    ciKeyInput.placeholder = settings.anthropic_key_set
+      ? "Key saved - enter a new key to replace"
+      : "sk-ant-...";
+  }
+  setCIStatus(settings.anthropic_key_set ? "Key set" : "Key not set",
+              settings.anthropic_key_set ? "ok" : "warn");
+}
+
+async function loadCISettings() {
+  if (ciLoaded || !window.STC || !STC.getSettings) return;
+  try {
+    const res = await STC.getSettings();
+    if (!res || !res.ok) {
+      setCIStatus((res && res.error) || "Settings unavailable", "warn");
+      return;
+    }
+    ciLoaded = true;
+    renderCISettings(res.settings);
+  } catch {
+    setCIStatus("Settings unavailable", "warn");
+  }
+}
+
+if (ciKeyInput) {
+  ciKeyInput.addEventListener("input", () => {
+    ciKeyInput.dataset.dirty = "true";
+  });
+}
+
+if (ciSaveBtn) {
+  ciSaveBtn.addEventListener("click", async () => {
+    if (!window.STC || !STC.updateSettings) return;
+    const body = {
+      comment_intelligence_enabled: !!(ciEnabled && ciEnabled.checked),
+    };
+    const rawKey = ciKeyInput ? ciKeyInput.value.trim() : "";
+    const keyDirty = ciKeyInput && ciKeyInput.dataset.dirty === "true";
+    if (rawKey || keyDirty) body.anthropic_key = rawKey || null;
+
+    setCIStatus("Saving...", null);
+    ciSaveBtn.disabled = true;
+    try {
+      const res = await STC.updateSettings(body);
+      if (!res || !res.ok) {
+        setCIStatus((res && res.error) || "Save failed", "warn");
+        return;
+      }
+      renderCISettings(res.settings);
+    } catch {
+      setCIStatus("Save failed", "warn");
+    } finally {
+      ciSaveBtn.disabled = false;
+    }
+  });
+}
+
+if (ciTestBtn) {
+  ciTestBtn.addEventListener("click", async () => {
+    if (!window.STC || !STC.testAnthropicKey) return;
+    const rawKey = ciKeyInput ? ciKeyInput.value.trim() : "";
+    setCIStatus("Testing key...", null);
+    ciTestBtn.disabled = true;
+    try {
+      const res = await STC.testAnthropicKey(rawKey || undefined);
+      if (res && res.valid) {
+        setCIStatus("Key test passed", "ok");
+        return;
+      }
+      setCIStatus(`Last test failed: ${(res && res.error) || "unknown error"}`, "warn");
+    } catch {
+      setCIStatus("Last test failed: server unavailable", "warn");
+    } finally {
+      ciTestBtn.disabled = false;
+    }
+  });
 }
 
 // ---- Step 4: hand off to YouTube + auto-trigger Yoink -------------------
@@ -263,6 +370,7 @@ function applyDownloadState() {
 }
 
 // ---- Boot ----------------------------------------------------------------
+setCIControlsEnabled(false);
 applyDownloadState();
 applySource();
 startPolling();
