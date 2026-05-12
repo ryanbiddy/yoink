@@ -220,6 +220,20 @@ def _anthropic_key_for_feature(feature_flag: str) -> str | None:
     return key.strip() or None
 
 
+def _saved_anthropic_key() -> str | None:
+    """Return the saved key for explicit/on-demand tool calls.
+
+    Feature flags gate automatic background work, but MCP tools are user-
+    initiated calls from an agent. Those should only require that a valid
+    key exists, not that the background feature toggle is enabled.
+    """
+    data = _read_settings()
+    key = data.get("anthropic_key") or ""
+    if data.get("anthropic_key_invalid"):
+        return None
+    return key.strip() or None
+
+
 def _anthropic_key_available() -> str | None:
     return _anthropic_key_for_feature("comment_intelligence_enabled")
 
@@ -2504,6 +2518,85 @@ def _list_public_jobs() -> list[dict]:
     return sorted(jobs, key=lambda j: j.get("updated_at") or "", reverse=True)
 
 
+def _create_playlist_job(playlist: dict, interval: int) -> tuple[str, dict]:
+    """Create + start a playlist job from an already-previewed playlist.
+
+    Shared by the HTTP `/playlist/start` route and the MCP `yoink_playlist`
+    tool so both entry points get identical job shapes and lifecycle.
+    """
+    job_id = _make_job_id()
+    title = playlist.get("title") or "YouTube Playlist"
+    folder_slug = slugify(title) or "playlist"
+    folder = _session_folder(folder_slug)
+    if folder.exists():
+        folder = _session_folder(f"{folder_slug}_{job_id[-6:]}")
+    cancel_event = threading.Event()
+    now = _now_iso()
+    job = {
+        "id": job_id,
+        "kind": "playlist",
+        "state": "queued",
+        "source_url": playlist["url"],
+        "playlist_title": title,
+        "session_folder": str(folder),
+        "videos_total": playlist["will_process_count"],
+        "videos_done": 0,
+        "videos_failed": 0,
+        "current_video": None,
+        "current_video_phase": None,
+        "started_at": None,
+        "updated_at": now,
+        "completed_at": None,
+        "error": None,
+        "result": None,
+        "warnings": playlist.get("warnings") or [],
+        "message": playlist.get("message"),
+        "per_video": [],
+        "_videos": playlist["videos"],
+        "_interval": interval,
+        "_folder": str(folder),
+        "_cancel_event": cancel_event,
+    }
+    worker = threading.Thread(
+        target=_playlist_worker,
+        args=(job_id,),
+        name=f"playlist-{job_id}",
+        daemon=True,
+    )
+    job["_thread"] = worker
+    with _jobs_lock:
+        _jobs[job_id] = job
+        public = _public_job(job)
+    worker.start()
+    return job_id, public
+
+
+def _cancel_playlist_job(job_id: str) -> tuple[dict | None, str | None, int]:
+    """Cancel a running async job. Returns (job, error, status)."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return None, "job not found", 404
+        if job.get("state") in ("completed", "cancelled", "failed"):
+            return None, "job is already finished", 200
+        event = job.get("_cancel_event")
+        if not isinstance(event, threading.Event):
+            return None, "job cancel failed", 200
+        event.set()
+        now = _now_iso()
+        job.update({
+            "state": "cancelled",
+            "current_video": None,
+            "current_video_phase": None,
+            "completed_at": now,
+            "error": None,
+            "result": None,
+            "message": "Playlist job cancelled. Partial outputs were left on disk.",
+            "updated_at": now,
+        })
+        return _public_job(job), None, 200
+
+
 def _unique_child_folder(parent: Path, preferred: str, used: set[str]) -> Path:
     base = slugify(preferred) or "video"
     slug = base
@@ -2619,6 +2712,80 @@ def _resolve_served_file(raw_path: str) -> tuple[Path | None, str | None, int, s
     if not mime or not _magic_matches(resolved, mime):
         return None, None, 415, "unsupported file type"
     return resolved, mime, 200, None
+
+
+# ---------------------------------------------------------------------------
+# MCP HTTP transport helpers
+# ---------------------------------------------------------------------------
+MCP_PROTOCOL_VERSION = "2025-11-25"
+MCP_SUPPORTED_PROTOCOL_VERSIONS = {
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+}
+
+
+def _mcp_tools_module():
+    import yoink_mcp_tools
+
+    yoink_mcp_tools.bind_backend(sys.modules[__name__])
+    return yoink_mcp_tools
+
+
+def _mcp_request_id(body: dict):
+    return body.get("id") if isinstance(body, dict) else None
+
+
+def _mcp_initialize_result(body: dict) -> dict:
+    params = body.get("params") if isinstance(body.get("params"), dict) else {}
+    requested = params.get("protocolVersion")
+    protocol = (
+        requested
+        if isinstance(requested, str) and requested in MCP_SUPPORTED_PROTOCOL_VERSIONS
+        else MCP_PROTOCOL_VERSION
+    )
+    return {
+        "protocolVersion": protocol,
+        "capabilities": {
+            "tools": {"listChanged": False},
+        },
+        "serverInfo": {
+            "name": "yoink",
+            "version": VERSION,
+        },
+        "instructions": (
+            "Yoink exposes local YouTube extraction tools. Outputs are stored "
+            "under the user's Yoink output folder on this machine."
+        ),
+    }
+
+
+def _mcp_stdio_command() -> tuple[str, list[str]]:
+    """Command/args for client config snippets.
+
+    Installed builds should use the bundled console `python.exe` for stdio;
+    `pythonw.exe` has no standard streams and would break JSON-RPC.
+    """
+    bundled = HERE / "python" / "python.exe"
+    command = bundled if bundled.exists() else Path(sys.executable)
+    return str(command), [str(HERE / "yoink_mcp.py")]
+
+
+def _mcp_config_payload() -> dict:
+    command, args = _mcp_stdio_command()
+    return {
+        "ok": True,
+        "stdio": {
+            "command": command,
+            "args": args,
+        },
+        "http": {
+            "url": f"http://{HOST}:{PORT}/mcp/v1",
+            "sse_url": f"http://{HOST}:{PORT}/mcp/v1/sse",
+            "auth_header": "X-Yoink-Token",
+        },
+    }
 
 
 def _finish_job_cancelled(job_id: str):
@@ -2981,6 +3148,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_settings_get()
         if bare == "/file":
             return self._handle_file()
+        if bare == "/mcp/v1/config":
+            return self._send_json(200, _mcp_config_payload())
+        if bare == "/mcp/v1/sse":
+            return self._handle_mcp_sse()
         if bare == "/open-prompts":
             return self._handle_open_prompts()
         if bare == "/open-index":
@@ -3113,6 +3284,73 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(status, {"ok": False, "error": error})
         return self._send_file(path, mime)
 
+    # ---- MCP HTTP transport ----
+    # This is a small JSON-RPC HTTP wrapper over the same tool registry used
+    # by yoink_mcp.py's stdio server. It intentionally keeps state out of the
+    # transport; auth remains the v1 X-Yoink-Token gate.
+    def _send_mcp_result(self, request_id, result: dict):
+        return self._send_json(200, {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result,
+        })
+
+    def _send_mcp_error(self, request_id, code: int, message: str):
+        return self._send_json(200, {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": code, "message": message},
+        })
+
+    def _handle_mcp_sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self._send_cors(self._cors_origin())
+        self.end_headers()
+        # Compatibility shim for HTTP/SSE clients: advertise the JSON-RPC
+        # POST endpoint. Most desktop agents use stdio; HTTP clients can use
+        # /mcp/v1 directly with the same JSON-RPC messages.
+        self.wfile.write(b"event: endpoint\ndata: /mcp/v1\n\n")
+        self.wfile.flush()
+        self.close_connection = True
+
+    def _mcp_tool_call_result(self, payload: dict) -> dict:
+        is_error = not bool(payload.get("ok", True))
+        text = json.dumps(payload, ensure_ascii=False)
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": payload,
+            "isError": is_error,
+        }
+
+    def _handle_mcp_post(self, bare: str, body: dict):
+        request_id = _mcp_request_id(body)
+        method = body.get("method") if isinstance(body.get("method"), str) else None
+        # Support both a single RPC endpoint (/mcp/v1 with method in body) and
+        # explicit helper paths (/mcp/v1/tools/call) because different HTTP
+        # MCP clients are still converging on transport details.
+        if bare == "/mcp/v1/initialize" or (bare == "/mcp/v1" and method == "initialize"):
+            return self._send_mcp_result(request_id, _mcp_initialize_result(body))
+        if method == "notifications/initialized":
+            return self._send_json(202, {"ok": True})
+        if method == "ping":
+            return self._send_mcp_result(request_id, {})
+        if bare == "/mcp/v1/tools/list" or (bare == "/mcp/v1" and method == "tools/list"):
+            return self._send_mcp_result(request_id, {
+                "tools": _mcp_tools_module().list_tools(),
+            })
+        if bare == "/mcp/v1/tools/call" or (bare == "/mcp/v1" and method == "tools/call"):
+            params = body.get("params") if isinstance(body.get("params"), dict) else body
+            name = params.get("name")
+            args = params.get("arguments") or {}
+            if not isinstance(name, str) or not isinstance(args, dict):
+                return self._send_mcp_error(request_id, -32602, "invalid tool call")
+            payload = _mcp_tools_module().call_tool(name, args)
+            return self._send_mcp_result(request_id, self._mcp_tool_call_result(payload))
+        return self._send_mcp_error(request_id, -32601, "method not found")
+
     # ---- /recent ----
     # Walk Desktop\Yoink\<topic>\<slug>\ and return the 3 most recent video
     # folders. A folder counts as a yoink if it has a yoink.md inside it.
@@ -3234,6 +3472,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_settings_post(body)
         if bare == "/settings/test-key":
             return self._handle_settings_test_key(body)
+        if bare.startswith("/mcp/v1"):
+            return self._handle_mcp_post(bare, body)
         if bare == "/playlist/preview":
             return self._handle_playlist_preview(body)
         if bare == "/playlist/start":
@@ -3335,50 +3575,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self._send_json(status, {"ok": False, "error": err})
 
-        job_id = _make_job_id()
-        title = playlist.get("title") or "YouTube Playlist"
-        folder_slug = slugify(title) or "playlist"
-        folder = _session_folder(folder_slug)
-        if folder.exists():
-            folder = _session_folder(f"{folder_slug}_{job_id[-6:]}")
-        cancel_event = threading.Event()
-        now = _now_iso()
-        job = {
-            "id": job_id,
-            "kind": "playlist",
-            "state": "queued",
-            "source_url": playlist["url"],
-            "playlist_title": title,
-            "session_folder": str(folder),
-            "videos_total": playlist["will_process_count"],
-            "videos_done": 0,
-            "videos_failed": 0,
-            "current_video": None,
-            "current_video_phase": None,
-            "started_at": None,
-            "updated_at": now,
-            "completed_at": None,
-            "error": None,
-            "result": None,
-            "warnings": playlist.get("warnings") or [],
-            "message": playlist.get("message"),
-            "per_video": [],
-            "_videos": playlist["videos"],
-            "_interval": interval,
-            "_folder": str(folder),
-            "_cancel_event": cancel_event,
-        }
-        worker = threading.Thread(
-            target=_playlist_worker,
-            args=(job_id,),
-            name=f"playlist-{job_id}",
-            daemon=True,
-        )
-        job["_thread"] = worker
-        with _jobs_lock:
-            _jobs[job_id] = job
-            public = _public_job(job)
-        worker.start()
+        job_id, public = _create_playlist_job(playlist, interval)
         self._send_json(200, {"ok": True, "job_id": job_id, "job": public})
 
     # ---- /jobs/<id> ----
@@ -3396,28 +3593,9 @@ class Handler(BaseHTTPRequestHandler):
         job_id, err, status = self._job_id_from_path(bare, cancel=True)
         if err:
             return self._send_json(status, {"ok": False, "error": err})
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-            if not job:
-                return self._send_json(404, {"ok": False, "error": "job not found"})
-            if job.get("state") in ("completed", "cancelled", "failed"):
-                return self._send_json(200, {"ok": False, "error": "job is already finished"})
-            event = job.get("_cancel_event")
-            if not isinstance(event, threading.Event):
-                return self._send_json(200, {"ok": False, "error": "job cancel failed"})
-            event.set()
-            now = _now_iso()
-            job.update({
-                "state": "cancelled",
-                "current_video": None,
-                "current_video_phase": None,
-                "completed_at": now,
-                "error": None,
-                "result": None,
-                "message": "Playlist job cancelled. Partial outputs were left on disk.",
-                "updated_at": now,
-            })
-            public = _public_job(job)
+        public, error, status = _cancel_playlist_job(job_id)
+        if error:
+            return self._send_json(status, {"ok": False, "error": error})
         self._send_json(200, {"ok": True, "job": public})
 
     # ---- /jobs ----

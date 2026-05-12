@@ -1,8 +1,8 @@
 # Yoink v2 API contract
 
-Status: draft for review  
-Scope: Playlist Mode backend contract only  
-Non-goal: no implementation details, UI design, Channel Decoder, Niche Corpus, or installer work
+Status: implemented through v2 Sprint 4
+Scope: Playlist Mode, settings, file serving, and MCP HTTP backend contract
+Non-goal: UI design, Channel Decoder, Niche Corpus, or Mac installer work
 
 ## Overview
 
@@ -605,6 +605,215 @@ Error responses:
 | 404 | `file not found` | File is missing or not a regular file. |
 | 415 | `unsupported file type` | Extension or magic bytes are not an allowed image type. |
 
+### MCP HTTP endpoints
+
+Yoink v2 Sprint 4 adds MCP over stdio and local HTTP. Stdio clients launch `yoink_mcp.py`; HTTP clients use the existing helper server under `/mcp/v1`.
+
+Auth: `X-Yoink-Token` required for every HTTP MCP endpoint, including config and SSE discovery.
+
+#### GET /mcp/v1/config
+
+Returns helper-generated config values for setup.html.
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "stdio": {
+    "command": "C:\\Users\\Ryan\\AppData\\Local\\Yoink\\python\\python.exe",
+    "args": ["C:\\Users\\Ryan\\AppData\\Local\\Yoink\\yoink_mcp.py"]
+  },
+  "http": {
+    "url": "http://127.0.0.1:5179/mcp/v1",
+    "sse_url": "http://127.0.0.1:5179/mcp/v1/sse",
+    "auth_header": "X-Yoink-Token"
+  }
+}
+```
+
+#### POST /mcp/v1/initialize
+
+MCP JSON-RPC initialize helper path. Also supported as `POST /mcp/v1` with method `initialize`.
+
+Request body:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {},
+    "clientInfo": { "name": "ExampleClient", "version": "1.0.0" }
+  }
+}
+```
+
+Success response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {
+      "tools": { "listChanged": false }
+    },
+    "serverInfo": {
+      "name": "yoink",
+      "version": "1.0.0"
+    },
+    "instructions": "Yoink exposes local YouTube extraction tools. Outputs are stored under the user's Yoink output folder on this machine."
+  }
+}
+```
+
+#### POST /mcp/v1/tools/list
+
+MCP tool listing helper path. Also supported as `POST /mcp/v1` with method `tools/list`.
+
+Request body:
+
+```json
+{ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
+```
+
+Success response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "yoink_video",
+        "description": "Extract a single YouTube video into a Yoink corpus. Returns the saved folder, markdown corpus, and screenshot paths.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string", "description": "YouTube video URL." },
+            "interval": { "type": "integer", "minimum": 5, "maximum": 300, "default": 30 }
+          },
+          "required": ["url"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}
+```
+
+Tools currently exposed:
+
+- `yoink_video`
+- `yoink_playlist`
+- `get_job_status`
+- `cancel_job`
+- `list_recent_yoinks`
+- `search_yoinks`
+- `get_yoink_corpus`
+- `analyze_comments`
+- `classify_hook`
+
+Full schemas and return shapes live in `docs/v2-mcp.md`.
+
+#### POST /mcp/v1/tools/call
+
+MCP tool call helper path. Also supported as `POST /mcp/v1` with method `tools/call`.
+
+Request body:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "search_yoinks",
+    "arguments": {
+      "query": "creator strategy",
+      "limit": 5
+    }
+  }
+}
+```
+
+Success response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"ok\": true, \"results\": []}"
+      }
+    ],
+    "structuredContent": {
+      "ok": true,
+      "results": []
+    },
+    "isError": false
+  }
+}
+```
+
+Handled tool failures still return JSON-RPC success with `isError: true` and a structured payload:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"ok\": false, \"error\": \"anthropic key not configured\"}"
+      }
+    ],
+    "structuredContent": {
+      "ok": false,
+      "error": "anthropic key not configured"
+    },
+    "isError": true
+  }
+}
+```
+
+Protocol errors use JSON-RPC error envelopes:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": { "code": -32602, "message": "invalid tool call" }
+}
+```
+
+#### GET /mcp/v1/sse
+
+Lightweight SSE compatibility endpoint for HTTP/SSE clients. It emits an `endpoint` event pointing to `/mcp/v1`.
+
+Headers:
+
+```http
+Content-Type: text/event-stream; charset=utf-8
+Cache-Control: no-cache
+```
+
+Event:
+
+```text
+event: endpoint
+data: /mcp/v1
+```
+
 ## Job state machine
 
 All async jobs use the same state machine:
@@ -739,10 +948,11 @@ No v2 playlist work may break existing single-video, session, health, token, rec
 
 ## Client-side helpers needed from Claude Code
 
-Claude Code owns `extension/lib/extract.js` in Sprint 3. Backend contracts now need these client helpers:
+Claude Code owns `extension/lib/extract.js`. Backend contracts now need these client helpers:
 
 - `getScreenshotThumbnail(path)` wraps authenticated `GET /file?path=<absolute-path>`, validates the response is an image, and returns a blob URL for use in `<img src>`.
 - `getSettings`, `updateSettings`, and `testAnthropicKey` already exist. Confirm their settings shape includes `hook_type_enabled` and `smart_screenshot_picker_enabled` alongside `comment_intelligence_enabled` and `anthropic_key_set`.
+- Sprint 4 MCP needs no new `extract.js` helpers. setup.html uses existing `STC.getToken()` plus authenticated fetch to `GET /mcp/v1/config`.
 
 ## Error model
 

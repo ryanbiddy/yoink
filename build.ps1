@@ -52,6 +52,9 @@ $YTDLP_VERSION  = '2026.03.17'
 # JPEG-recompress + base64-encode the embedded screenshots). Pinned to
 # a recent stable; bump at release-prep time after testing.
 $PILLOW_VERSION = '10.4.0'
+# Official Model Context Protocol Python SDK for the stdio MCP server.
+# Also pinned in requirements.txt for dev installs and docs.
+$MCP_VERSION    = '1.27.1'
 
 # ---- Hash verification --------------------------------------------------
 # Lock in known-good SHA256s so a compromised mirror or silent upstream
@@ -181,16 +184,17 @@ $embedPython = "$StagingDir\python\python.exe"
 & $embedPython $getPipPy --no-warn-script-location
 if ($LASTEXITCODE -ne 0) { throw 'pip bootstrap failed' }
 
-# 2d. Install yt-dlp + Pillow at pinned versions. Pip's hash-locking would
+# 2d. Install yt-dlp + Pillow + MCP at pinned versions. Pip's hash-locking would
 #     require a requirements file with --require-hashes; for v1 we accept
 #     the trust-pip-itself model since the version pins are the
 #     load-bearing part (a compromised release on PyPI affects everyone,
 #     not just us). Pillow drives the multimodal paste-corpus generator
 #     (resize / re-encode / base64 screenshots for clipboard embedding).
-Write-Host "    installing yt-dlp==$YTDLP_VERSION + Pillow==$PILLOW_VERSION..."
+#     MCP powers yoink_mcp.py for stdio agent integrations.
+Write-Host "    installing yt-dlp==$YTDLP_VERSION + Pillow==$PILLOW_VERSION + mcp==$MCP_VERSION..."
 & $embedPython -m pip install --no-warn-script-location --no-compile `
-    "yt-dlp==$YTDLP_VERSION" "Pillow==$PILLOW_VERSION"
-if ($LASTEXITCODE -ne 0) { throw 'pip install (yt-dlp + Pillow) failed' }
+    "yt-dlp==$YTDLP_VERSION" "Pillow==$PILLOW_VERSION" "mcp==$MCP_VERSION"
+if ($LASTEXITCODE -ne 0) { throw 'pip install (yt-dlp + Pillow + MCP) failed' }
 
 # 2e. Trim dev-only and build-time files we don't need at runtime.
 # distutils-precedence.pth is dropped by setuptools and tries to import
@@ -232,6 +236,9 @@ Remove-Item -Recurse -Force $ffmpegTmp
 # 2g. Server source + helpers + icon
 Write-Host '    copying server source + templates...'
 Copy-Item (Join-Path $RepoRoot 'server.py')      $StagingDir -Force
+Copy-Item (Join-Path $RepoRoot 'yoink_mcp.py')   $StagingDir -Force
+Copy-Item (Join-Path $RepoRoot 'yoink_mcp_tools.py') $StagingDir -Force
+Copy-Item (Join-Path $RepoRoot 'requirements.txt') $StagingDir -Force
 Copy-Item (Join-Path $RepoRoot 'yt_extract.py')  $StagingDir -Force
 Copy-Item (Join-Path $RepoRoot 'topics.json')    $StagingDir -Force
 Copy-Item (Join-Path $TemplatesDir 'stop-server.bat') $StagingDir -Force

@@ -8,6 +8,7 @@
 ;   python\         Python 3.11 embeddable + Lib\site-packages\yt_dlp
 ;   bin\            ffmpeg.exe + ffprobe.exe (PATH-prepended by server.py)
 ;   server.py       The local helper server. pythonw.exe runs it (no console).
+;   yoink_mcp.py    MCP stdio entry point for agent clients.
 ;   yt_extract.py   Helper module imported by server.py.
 ;   topics.json     Topic-folder routing rules.
 ;   stop-server.bat Stops the server via the PID file written at startup.
@@ -57,6 +58,9 @@ Source: "staging\bin\*"; DestDir: "{app}\bin"; Flags: recursesubdirs ignoreversi
 
 ; Server source.
 Source: "staging\server.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "staging\yoink_mcp.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "staging\yoink_mcp_tools.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "staging\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\yt_extract.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\topics.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\stop-server.bat"; DestDir: "{app}"; Flags: ignoreversion

@@ -75,6 +75,16 @@ const ciTestBtn = document.getElementById("ci-test-btn");
 const ciClearBtn = document.getElementById("ci-clear-btn");
 const hookTypeEnabled = document.getElementById("hook-type-enabled");
 const smartScreenshotPickerEnabled = document.getElementById("smart-screenshot-picker-enabled");
+const mcpStdioPath = document.getElementById("mcp-stdio-path");
+const mcpHttpUrl = document.getElementById("mcp-http-url");
+const mcpHttpToken = document.getElementById("mcp-http-token");
+const mcpConfigEls = {
+  claude: document.getElementById("mcp-config-claude"),
+  chatgpt: document.getElementById("mcp-config-chatgpt"),
+  cursor: document.getElementById("mcp-config-cursor"),
+  generic: document.getElementById("mcp-config-generic"),
+};
+const mcpCopyButtons = Array.from(document.querySelectorAll("[data-copy-client]"));
 
 // ---- Suggested-video population -----------------------------------------
 function videoIdFromUrl(url) {
@@ -226,6 +236,7 @@ function onServerUp() {
   updateHeader("running");
   setCIControlsEnabled(true);
   loadCISettings();
+  loadMCPConfig();
   markDone(step3);
   if (step4.classList.contains("hidden")) {
     step4.classList.remove("hidden");
@@ -388,6 +399,101 @@ if (ciClearBtn) {
       setCIStatus("Clear failed", "warn");
     } finally {
       ciClearBtn.disabled = false;
+    }
+  });
+}
+
+// ---- MCP config snippets -------------------------------------------------
+let mcpSnippets = {};
+
+function jsonPretty(obj) {
+  return JSON.stringify(obj, null, 2);
+}
+
+function stdioServerConfig(config) {
+  return {
+    mcpServers: {
+      yoink: {
+        command: config.stdio.command,
+        args: config.stdio.args,
+      },
+    },
+  };
+}
+
+function buildMcpSnippets(config, token) {
+  const stdio = stdioServerConfig(config);
+  const http = {
+    url: config.http.url,
+    headers: { "X-Yoink-Token": token || "<token>" },
+  };
+  return {
+    claude: jsonPretty(stdio),
+    chatgpt: jsonPretty({
+      name: "yoink",
+      transport: "stdio",
+      command: config.stdio.command,
+      args: config.stdio.args,
+    }),
+    cursor: jsonPretty(stdio),
+    generic: [
+      "STDIO:",
+      jsonPretty(stdio),
+      "",
+      "HTTP:",
+      jsonPretty(http),
+    ].join("\n"),
+  };
+}
+
+function renderMcpConfig(config, token) {
+  if (!config || !config.ok) return;
+  const stdioText = [config.stdio.command].concat(config.stdio.args || []).join(" ");
+  if (mcpStdioPath) mcpStdioPath.textContent = stdioText;
+  if (mcpHttpUrl) mcpHttpUrl.textContent = config.http.url;
+  if (mcpHttpToken) {
+    mcpHttpToken.textContent = token ? `X-Yoink-Token: ${token}` : "Token unavailable.";
+  }
+  mcpSnippets = buildMcpSnippets(config, token);
+  for (const [client, el] of Object.entries(mcpConfigEls)) {
+    if (el) el.textContent = mcpSnippets[client] || "";
+  }
+}
+
+async function loadMCPConfig() {
+  if (!window.STC || !STC.getToken) return;
+  try {
+    const token = await STC.getToken();
+    const res = await fetch(`${SERVER}/mcp/v1/config`, {
+      method: "GET",
+      mode: "cors",
+      cache: "no-store",
+      headers: token ? { "X-Yoink-Token": token } : {},
+    });
+    const config = await res.json();
+    if (!res.ok || !config || !config.ok) throw new Error("MCP config unavailable");
+    renderMcpConfig(config, token);
+  } catch {
+    const msg = "MCP config unavailable. Make sure Yoink Server is running.";
+    if (mcpStdioPath) mcpStdioPath.textContent = msg;
+    if (mcpHttpUrl) mcpHttpUrl.textContent = msg;
+  }
+}
+
+for (const btn of mcpCopyButtons) {
+  btn.addEventListener("click", async () => {
+    const client = btn.getAttribute("data-copy-client");
+    const text = mcpSnippets[client];
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const old = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = old; }, 1200);
+    } catch {
+      const old = btn.textContent;
+      btn.textContent = "Copy failed";
+      setTimeout(() => { btn.textContent = old; }, 1200);
     }
   });
 }
