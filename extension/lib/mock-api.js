@@ -178,7 +178,9 @@
     };
   }
 
-  async function playlistStart(url) {
+  async function playlistStart(url, _interval) {
+    // _interval is accepted for signature parity with the real backend but
+    // ignored — mock job timing is wall-clock based, not screenshot-derived.
     _resetJob(url);
     // Contract returns BOTH top-level job_id AND nested job — preserves
     // backward compat for any client that grabs job_id without unwrapping.
@@ -314,12 +316,11 @@
     if (testKey != null) {
       valid = testKey.startsWith("sk-ant-") && testKey.length > 12;
       if (!valid) error = "invalid x-api-key";
-      // The contract says: "anthropic_key as a non-empty string replaces
-      // the saved key" — that's POST /settings semantics. For test-key
-      // alone the contract is silent on save semantics, but the success
-      // example flips anthropic_key_set to true, implying a successful
-      // test-key persists the key. Mirror that here.
-      if (valid) mockSavedKeyPresent = true;
+      // Sprint 5: the real /settings/test-key endpoint validates without
+      // persisting (setup.html POSTs /settings separately to save). Mock
+      // previously flipped mockSavedKeyPresent on a valid test — that drift
+      // misled setup.html testing in mock mode. The mock now mirrors
+      // production: a successful test does NOT save the key.
     } else {
       // Test the saved key.
       valid = mockSavedKeyPresent;

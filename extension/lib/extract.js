@@ -254,9 +254,15 @@
     if (_useMock()) return global.MOCK_API.playlistPreview(url);
     return _postJson("/playlist/preview", { url });
   }
-  function playlistStart(url) {
-    if (_useMock()) return global.MOCK_API.playlistStart(url);
-    return _postJson("/playlist/start", { url });
+  function playlistStart(url, interval) {
+    // Sprint 5: the popup sources interval from the same chrome.storage.sync
+    // setting single-video uses (5-300, default 30). Backend defaults to 30
+    // if interval is omitted, so this stays compatible with older callers
+    // that pass only url.
+    const body = (typeof interval === "number" && Number.isFinite(interval))
+      ? { url, interval } : { url };
+    if (_useMock()) return global.MOCK_API.playlistStart(url, interval);
+    return _postJson("/playlist/start", body);
   }
   function jobStatus(jobId) {
     if (_useMock()) return global.MOCK_API.jobStatus(jobId);
