@@ -257,6 +257,23 @@
   }
 
   async function jobCancel(jobId) {
+    // Sprint 9: handle cancel for the running-recovery fixture so QA can
+    // exit the recovered-state UI in mock mode. Synthesized statelessly —
+    // the cancel response itself carries state="cancelled", which is what
+    // the popup's cancel handler renders via onCancelled(). The popup
+    // stops polling on cancel, so the fixture's running-state jobStatus
+    // path doesn't get hit again.
+    if (MOCK_FORCE_RECOVERY_RUNNING && jobId === "fixture_running_job") {
+      const cancelled = _fixtureRunningJob();
+      cancelled.state = "cancelled";
+      cancelled.completed_at = _isoNow();
+      cancelled.updated_at = _isoNow();
+      cancelled.current_video = null;
+      cancelled.current_video_phase = null;
+      cancelled.message =
+        "Playlist job cancelled. Partial outputs were left on disk.";
+      return { ok: true, job: cancelled };
+    }
     if (!job || jobId !== MOCK_JOB_ID) {
       return { ok: false, error: "job not found" };
     }
@@ -295,9 +312,10 @@
   // through playlistStart. jobStatus(fixture_running_job) keeps serving
   // the same frozen state on every poll tick so the running UI + pill
   // remain interactive; the fixture does not progress on its own.
-  // Click cancel to exit the fixture; the cancel handler will fail
-  // because the cancel path doesn't recognize fixture ids — for QA
-  // purposes, reload the popup with the flag flipped off instead.
+  // Sprint 9: cancel from the recovered-state UI now works — jobCancel
+  // recognizes the fixture id and returns a synthesized cancelled job,
+  // which the popup renders via onCancelled. Reload the popup with the
+  // flag flipped off to clear the fixture.
   function _fixtureRunningJob() {
     const now = new Date().toISOString();
     return {
