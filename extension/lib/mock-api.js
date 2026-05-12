@@ -48,7 +48,11 @@
   // impossible to exercise from scratch — flip these to inject fake state
   // into jobsList() at popup boot. Set at most one to true at a time.
   const MOCK_FORCE_RECOVERY_RUNNING = false;     // simulates close+reopen mid-job
-  const MOCK_FORCE_RECOVERY_COMPLETED = false;   // simulates last-yoink affordance
+  const MOCK_FORCE_RECOVERY_COMPLETED = false;   // simulates last-yoink affordance (playlist)
+  // Sprint 7: simulates a recent kind="single" record returned by /jobs.
+  // Per Codex's Sprint 7 contract, /extract writes a side-effect single job
+  // record that surfaces in /jobs alongside playlists.
+  const MOCK_FORCE_RECOVERY_SINGLE_COMPLETED = false;
   const _needsKey =
     MOCK_FORCE_CI_ENABLED || MOCK_FORCE_HOOK_TYPE_ENABLED;
   let mockSettings = {
@@ -109,6 +113,9 @@
       kind: "playlist",
       state: "queued",
       source_url: sourceUrl || "https://www.youtube.com/playlist?list=PLmock",
+      // Sprint 7: contract field. Null for playlist jobs (title belongs to
+      // single-video records); kept here so _publicJob emits it consistently.
+      title: null,
       playlist_title: MOCK_PLAYLIST_TITLE,
       // session_folder is populated from `queued` onwards and stays
       // populated through every terminal state (including cancelled and
@@ -266,11 +273,16 @@
 
   async function jobsList() {
     if (!job) {
-      // No live mock job. Sprint 6 fixtures synthesize a job purely so the
-      // UI can exercise recovery paths that depend on jobsList returning
-      // something from before the popup opened.
+      // No live mock job. Sprint 6/7 fixtures synthesize a job purely so
+      // the UI can exercise recovery paths that depend on jobsList
+      // returning something from before the popup opened. Only one
+      // fixture flag should be true at a time — they're ordered here so
+      // the running fixture wins (most useful for testing the pill).
       if (MOCK_FORCE_RECOVERY_RUNNING) return { ok: true, jobs: [_fixtureRunningJob()] };
       if (MOCK_FORCE_RECOVERY_COMPLETED) return { ok: true, jobs: [_fixtureCompletedJob()] };
+      if (MOCK_FORCE_RECOVERY_SINGLE_COMPLETED) {
+        return { ok: true, jobs: [_fixtureSingleCompletedJob()] };
+      }
       return { ok: true, jobs: [] };
     }
     return { ok: true, jobs: [_publicJob()] };
@@ -293,6 +305,7 @@
       kind: "playlist",
       state: "running",
       source_url: "https://www.youtube.com/playlist?list=PLfixture",
+      title: null,
       playlist_title: MOCK_PLAYLIST_TITLE,
       session_folder: MOCK_SESSION_FOLDER,
       videos_total: MOCK_TOTAL_VIDEOS,
@@ -312,9 +325,9 @@
   }
 
   // _fixtureCompletedJob: a recently-finished playlist job. Pairing with
-  // MOCK_FORCE_RECOVERY_COMPLETED exercises the "Last yoink: ..." affordance
-  // on the playlist input panel. completed_at is 5 minutes ago so it
-  // falls inside the popup's 30-minute "recent" window.
+  // MOCK_FORCE_RECOVERY_COMPLETED exercises the "Last playlist: ..."
+  // affordance on the playlist input panel. completed_at is 5 minutes
+  // ago so it falls inside the popup's 30-minute "recent" window.
   function _fixtureCompletedJob() {
     const completedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     return {
@@ -322,6 +335,7 @@
       kind: "playlist",
       state: "completed",
       source_url: "https://www.youtube.com/playlist?list=PLfixturedone",
+      title: null,
       playlist_title: MOCK_PLAYLIST_TITLE,
       session_folder: MOCK_SESSION_FOLDER,
       videos_total: MOCK_TOTAL_VIDEOS,
@@ -336,6 +350,40 @@
       result: null, // result is null in jobsList — only /jobs/<id> returns the full result
       warnings: ["playlist exceeds cap"],
       message: "Playlist complete.",
+    };
+  }
+
+  // _fixtureSingleCompletedJob (Sprint 7): a recently-finished kind="single"
+  // job. Pairs with MOCK_FORCE_RECOVERY_SINGLE_COMPLETED to exercise the
+  // single-video branch of the "Last yoink: ..." affordance. Shape per
+  // docs/v2-api.md GET /jobs example: title populated, playlist_title null,
+  // videos_total: 1, videos_done: 1. completed_at within the 30-minute
+  // window.
+  function _fixtureSingleCompletedJob() {
+    const completedAt = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const folder =
+      "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\" +
+      "a-practical-guide-to-creator-research";
+    return {
+      id: "fixture_single_completed_job",
+      kind: "single",
+      state: "completed",
+      source_url: "https://www.youtube.com/watch?v=abc123DEF45",
+      title: "A practical guide to creator research",
+      playlist_title: null,
+      session_folder: folder,
+      videos_total: 1,
+      videos_done: 1,
+      videos_failed: 0,
+      current_video: null,
+      current_video_phase: null,
+      started_at: completedAt,
+      updated_at: completedAt,
+      completed_at: completedAt,
+      error: null,
+      result: null, // jobsList omits result; only /jobs/<id> returns it
+      warnings: [],
+      message: "Single-video yoink complete.",
     };
   }
 

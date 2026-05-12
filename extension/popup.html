@@ -507,6 +507,10 @@
     .pl-last-yoink-label .pl-last-yoink-title {
       color: #e6e6e6;
     }
+    .pl-last-yoink-label .pl-last-yoink-suffix {
+      color: #888;
+      margin-left: 4px;
+    }
     .pl-last-yoink-btn {
       flex-shrink: 0;
       padding: 3px 8px;
@@ -797,8 +801,9 @@
            job exists but a recent completed playlist is available. -->
       <div id="pl-last-yoink" class="pl-last-yoink hidden">
         <div class="pl-last-yoink-label">
-          <span>Last yoink: </span>
+          <span id="pl-last-yoink-prefix">Last yoink: </span>
           <span id="pl-last-yoink-title" class="pl-last-yoink-title">—</span>
+          <span id="pl-last-yoink-suffix" class="pl-last-yoink-suffix"></span>
         </div>
         <button id="pl-last-yoink-btn" class="pl-last-yoink-btn">Open folder</button>
       </div>

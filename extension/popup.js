@@ -998,6 +998,44 @@ window.addEventListener("unload", () => {
 
   const SETUP_OFFLINE_URL = chrome.runtime.getURL("setup.html?source=offline");
 
+  // Sprint 7: persisted rate-limit so the popup doesn't auto-open the setup
+  // guide on every popup-open against a still-offline helper. 5 minutes is
+  // long enough that a user who closed the tab on purpose isn't pestered,
+  // short enough that a sustained outage with multiple popup opens still
+  // eventually re-surfaces the guide as a reminder.
+  const AUTO_OPEN_RATE_LIMIT_MS = 5 * 60 * 1000;
+  const AUTO_OPEN_TIMESTAMP_KEY = "yoink_setup_auto_open_at";
+
+  function _shouldSuppressAutoOpen() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get({ [AUTO_OPEN_TIMESTAMP_KEY]: 0 }, (items) => {
+          const last = (items && items[AUTO_OPEN_TIMESTAMP_KEY]) || 0;
+          resolve(Date.now() - last < AUTO_OPEN_RATE_LIMIT_MS);
+        });
+      } catch { resolve(false); }
+    });
+  }
+
+  function _markAutoOpened() {
+    try {
+      chrome.storage.local.set({ [AUTO_OPEN_TIMESTAMP_KEY]: Date.now() });
+    } catch { /* non-fatal: rate limit becomes per-session if storage fails */ }
+  }
+
+  async function _maybeAutoOpenSetup() {
+    if (await _shouldSuppressAutoOpen()) {
+      console.info("[playlist] auto-open setup suppressed by rate limit");
+      return;
+    }
+    try {
+      chrome.tabs.create({ url: SETUP_OFFLINE_URL, active: true });
+      _markAutoOpened();
+    } catch (e) {
+      console.warn("[playlist] auto-open setup failed", e);
+    }
+  }
+
   function startPolling() {
     stopPolling();
     pollFailures = 0;
@@ -1074,19 +1112,23 @@ window.addEventListener("unload", () => {
       _setPollCadence(SLOW_POLL_MS);
     }
 
-    // Item 2: after AUTO_OPEN_SETUP_MS of continuous disconnect, open the
-    // setup guide once per episode. _onPollSuccess clears the flag so a
-    // recovered-then-relapsed connection can trigger the auto-open again
-    // (treat each reconnect-then-disconnect as a fresh episode).
+    // Item 2 (Sprint 6 + 7): after AUTO_OPEN_SETUP_MS of continuous
+    // disconnect, attempt to open the setup guide once per episode.
+    // _onPollSuccess clears the in-memory flag so a recovered-then-
+    // relapsed connection can re-trigger after another 30s.
+    // Sprint 7 adds a chrome.storage.local rate-limit on top: even
+    // within the in-memory flag rules, if the last auto-open happened
+    // less than AUTO_OPEN_RATE_LIMIT_MS ago (across popup sessions),
+    // suppress the tab open. We set setupAutoOpened = true BEFORE the
+    // async storage check so a fast-firing poll doesn't double-spawn
+    // the async work; if the rate-limit suppresses the open, the flag
+    // stays set for the rest of this episode (matching spec: "suppress
+    // auto-open even after 30s of disconnect this episode").
     if (!setupAutoOpened &&
         disconnectStartTs > 0 &&
         Date.now() - disconnectStartTs >= AUTO_OPEN_SETUP_MS) {
-      try {
-        chrome.tabs.create({ url: SETUP_OFFLINE_URL, active: true });
-      } catch (e) {
-        console.warn("[playlist] auto-open setup failed", e);
-      }
       setupAutoOpened = true;
+      _maybeAutoOpenSetup();
     }
 
     if (reason) console.warn("[playlist] poll stalled:", reason);
@@ -1358,7 +1400,9 @@ window.addEventListener("unload", () => {
   // first ship. Document if we hit user pushback.
   const LAST_YOINK_WINDOW_MS = 30 * 60 * 1000;
   const lastYoinkEl = document.getElementById("pl-last-yoink");
+  const lastYoinkPrefixEl = document.getElementById("pl-last-yoink-prefix");
   const lastYoinkTitleEl = document.getElementById("pl-last-yoink-title");
+  const lastYoinkSuffixEl = document.getElementById("pl-last-yoink-suffix");
   const lastYoinkBtn = document.getElementById("pl-last-yoink-btn");
 
   function _hideLastYoink() {
@@ -1369,18 +1413,25 @@ window.addEventListener("unload", () => {
   function _renderLastYoink(job) {
     if (!lastYoinkEl || !lastYoinkTitleEl || !lastYoinkBtn) return;
     if (!job) { _hideLastYoink(); return; }
-    // Label: prefer playlist_title; fall back to source_url for jobs that
-    // somehow lack a title. Both go through textContent so a hostile
-    // playlist title can't inject markup. The contract today only emits
-    // kind="playlist" jobs; if Codex later adds kind="single" to /jobs,
-    // this branch handles it with a sensible fallback label.
-    let label;
+    // Sprint 7: kind-aware label per the updated /jobs contract.
+    // Single jobs populate `title`; playlist jobs populate `playlist_title`.
+    // Both fields go through textContent so a hostile YouTube-side title
+    // (yt-dlp surfaces it as-is) can't inject markup.
+    let prefix, label, suffix = "";
     if (job.kind === "single") {
-      label = job.playlist_title || job.source_url || "Single video";
+      prefix = "Last yoink: ";
+      label = job.title || job.source_url || "Single video";
     } else {
+      // Default to playlist for any non-single kind (today only "playlist"
+      // exists; defensively handle future kinds with the same shape).
+      prefix = "Last playlist: ";
       label = job.playlist_title || "Playlist";
+      const count = typeof job.videos_done === "number" ? job.videos_done : 0;
+      if (count > 0) suffix = ` (${count} video${count === 1 ? "" : "s"})`;
     }
+    if (lastYoinkPrefixEl) lastYoinkPrefixEl.textContent = prefix;
     lastYoinkTitleEl.textContent = label;
+    if (lastYoinkSuffixEl) lastYoinkSuffixEl.textContent = suffix;
     lastYoinkBtn.onclick = async () => {
       const path = job.session_folder;
       if (!path) {
