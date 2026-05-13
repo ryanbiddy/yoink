@@ -6,7 +6,7 @@ Transports: stdio, plus an experimental authenticated local HTTP JSON-RPC helper
 
 ## Overview
 
-Yoink exposes its existing extraction, playlist, search, corpus, Comment Intelligence, and Hook Type functionality as MCP tools. The tool implementation lives in `yoink_mcp_tools.py`; stdio (`yoink_mcp.py`) is the officially supported MCP transport, and the local HTTP JSON-RPC helper (`server.py` under `/mcp/v1`) wraps the same registry for clients that can use direct POST calls.
+Yoink exposes its existing extraction, playlist, search, corpus, Comment Intelligence, Hook Type, and hook-taxonomy functionality as MCP tools. The tool implementation lives in `yoink_mcp_tools.py`; stdio (`yoink_mcp.py`) is the officially supported MCP transport, and the local HTTP JSON-RPC helper (`server.py` under `/mcp/v1`) wraps the same registry for clients that can use direct POST calls.
 
 ## Compatibility matrix
 
@@ -347,13 +347,55 @@ Errors:
 
 Rate limit: 10 calls/minute per process.
 
+### get_taxonomy
+
+Return Hook Type taxonomy rows captured from successful classifications. This is a read-only tool intended for future taxonomy viewing, CSV export, and retention controls.
+
+Parameters:
+
+```json
+{
+  "channel": "Example Channel",
+  "hook_type": "curiosity_gap",
+  "limit": 50
+}
+```
+
+All fields are optional. `channel` is an exact channel-name filter, compared case-insensitively. `hook_type` must be one of the Hook Type categories. `limit` defaults to 50 and is clamped to 1-500.
+
+Return shape:
+
+```json
+{
+  "ok": true,
+  "taxonomy": [
+    {
+      "video_id": "abc123DEF45",
+      "hook_type": "curiosity_gap",
+      "hook_explanation": "The opening withholds the payoff while promising a counter-intuitive reveal.",
+      "channel": "Example Channel",
+      "title": "How creators build durable content systems",
+      "classified_at": "2026-05-12T10:30:00"
+    }
+  ]
+}
+```
+
+Rows sort by `classified_at` descending.
+
+Errors:
+
+- `{ "ok": false, "error": "channel must be a string" }`
+- `{ "ok": false, "error": "hook_type must be a string" }`
+- `{ "ok": false, "error": "hook_type invalid" }`
+
 ## Rate limits and abuse mitigations
 
 - `yoink_video`: 5 calls/minute per process.
 - `yoink_playlist`: 5 calls/minute per process.
 - `analyze_comments`: 10 calls/minute per process.
 - `classify_hook`: 10 calls/minute per process.
-- Read-only tools are not rate-limited.
+- Read-only tools (`list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `get_job_status`, `get_taxonomy`) are not rate-limited.
 
 Rate-limit errors return friendly tool payloads, for example:
 

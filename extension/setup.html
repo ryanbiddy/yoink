@@ -374,6 +374,21 @@
     }
     .settings-status.ok { color: var(--ok); }
     .settings-status.warn { color: var(--warn); }
+    .cost-estimate {
+      padding: 10px 12px;
+      border-radius: 7px;
+      border: 1px solid rgba(234, 88, 12, 0.25);
+      background: rgba(234, 88, 12, 0.08);
+      color: var(--yoink-white);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .cost-estimate.hidden { display: none; }
+    .cost-estimate small {
+      display: block;
+      color: var(--text-mute);
+      margin-top: 3px;
+    }
     .settings-link {
       color: var(--yoink-accent);
       font-size: 13px;
@@ -581,6 +596,7 @@
       </div>
       <p>Optionally analyze the top YouTube comments with your own Anthropic API key. Normal Yoink works without this.</p>
       <p class="sub">Your key is stored locally in your operating system credential store. Yoink never returns it to the extension or logs it.</p>
+      <div id="ai-cost-estimate" class="cost-estimate hidden"></div>
 
       <div class="settings-grid">
         <label class="toggle-row">

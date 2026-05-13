@@ -22,7 +22,7 @@ const SUGGESTED_VIDEO = {
 // LAUNCH GATE -- flip to `true` only after Yoink-Setup-1.0.0.exe is live
 // at github.com/ryanbiddy/yoink/releases/latest. Procedure (also in
 // docs/build-installer.md, "Launch checklist"):
-//   1. Lock SHA256 hashes in build.ps1 (currently TODO).
+//   1. Confirm SHA256 hashes in build.ps1 match the component versions.
 //   2. Run .\build.ps1 -- builds Yoink-Setup-1.0.0.exe.
 //   3. Smoke-test on a clean Windows VM.
 //   4. git tag v1.0.0 && git push --tags.
@@ -75,6 +75,7 @@ const ciStatus = document.getElementById("ci-status");
 const ciSaveBtn = document.getElementById("ci-save-btn");
 const ciTestBtn = document.getElementById("ci-test-btn");
 const ciClearBtn = document.getElementById("ci-clear-btn");
+const aiCostEstimate = document.getElementById("ai-cost-estimate");
 const hookTypeEnabled = document.getElementById("hook-type-enabled");
 const smartScreenshotPickerEnabled = document.getElementById("smart-screenshot-picker-enabled");
 const mcpStdioPath = document.getElementById("mcp-stdio-path");
@@ -242,6 +243,7 @@ function onServerUp() {
   statusInstructions.classList.add("hidden");
   updateHeader("running");
   setCIControlsEnabled(true);
+  loadAIPricing();
   loadCISettings();
   loadMCPConfig();
   markDone(step3);
@@ -260,12 +262,49 @@ function onServerUp() {
 
 // ---- Comment Intelligence settings --------------------------------------
 let ciLoaded = false;
+let aiSettings = null;
+let aiPricing = null;
 
 function setCIStatus(text, mode) {
   if (!ciStatus) return;
   ciStatus.textContent = text;
   ciStatus.classList.remove("ok", "warn");
   if (mode) ciStatus.classList.add(mode);
+}
+
+function dollars(n) {
+  if (!Number.isFinite(n)) return "$0.00";
+  if (n < 0.01) return `$${n.toFixed(3)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function renderAICostEstimate() {
+  if (!aiCostEstimate) return;
+  const hasKey = !!(
+    (aiSettings && aiSettings.anthropic_key_set)
+    || (ciKeyInput && ciKeyInput.value.trim())
+  );
+  const ciOn = !!(ciEnabled && ciEnabled.checked);
+  const hookOn = !!(hookTypeEnabled && hookTypeEnabled.checked);
+  if (!hasKey || !aiPricing || (!ciOn && !hookOn)) {
+    aiCostEstimate.classList.add("hidden");
+    aiCostEstimate.textContent = "";
+    return;
+  }
+
+  const est = aiPricing.est_per_video || {};
+  const parts = [];
+  if (ciOn) parts.push(`Comment Intelligence ${dollars(Number(est.ci || 0))}`);
+  if (hookOn) parts.push(`Hook Type ${dollars(Number(est.hook || 0))}`);
+  const total = ciOn && hookOn
+    ? Number(est.both || 0)
+    : Number((ciOn ? est.ci : est.hook) || 0);
+  const model = aiPricing.display_model || aiPricing.model || "Anthropic";
+  aiCostEstimate.innerHTML = [
+    `≈ ${dollars(total)} estimated per video`,
+    `<small>${parts.join(" + ")} · ${model} estimate, actual token usage may vary.</small>`,
+  ].join("");
+  aiCostEstimate.classList.remove("hidden");
 }
 
 function setCIControlsEnabled(enabled) {
@@ -281,10 +320,12 @@ function setCIControlsEnabled(enabled) {
     if (el) el.disabled = !enabled;
   }
   if (!enabled) setCIStatus("Start Yoink to manage settings.", "warn");
+  if (!enabled && aiCostEstimate) aiCostEstimate.classList.add("hidden");
 }
 
 function renderCISettings(settings) {
   if (!settings) return;
+  aiSettings = settings;
   if (ciEnabled) ciEnabled.checked = !!settings.comment_intelligence_enabled;
   if (hookTypeEnabled) hookTypeEnabled.checked = !!settings.hook_type_enabled;
   if (smartScreenshotPickerEnabled) {
@@ -299,6 +340,35 @@ function renderCISettings(settings) {
   }
   setCIStatus(settings.anthropic_key_set ? "Key set" : "Key not set.",
               settings.anthropic_key_set ? "ok" : "warn");
+  renderAICostEstimate();
+}
+
+async function fetchPricingWithToken(token) {
+  return fetch(`${SERVER}/settings/pricing`, {
+    method: "GET",
+    mode: "cors",
+    cache: "no-store",
+    headers: token ? { "X-Yoink-Token": token } : {},
+  });
+}
+
+async function loadAIPricing() {
+  if (!window.STC || !STC.getToken) return;
+  try {
+    let token = await STC.getToken();
+    let res = await fetchPricingWithToken(token);
+    if (res.status === 403) {
+      token = await STC.getToken({ refresh: true });
+      res = await fetchPricingWithToken(token);
+    }
+    const body = await res.json();
+    if (res.ok && body && body.ok && body.pricing) {
+      aiPricing = body.pricing;
+      renderAICostEstimate();
+    }
+  } catch {
+    // Cost visibility is a trust affordance, not a setup blocker.
+  }
 }
 
 async function loadCISettings() {
@@ -319,7 +389,12 @@ async function loadCISettings() {
 if (ciKeyInput) {
   ciKeyInput.addEventListener("input", () => {
     ciKeyInput.dataset.dirty = "true";
+    renderAICostEstimate();
   });
+}
+
+for (const toggle of [ciEnabled, hookTypeEnabled]) {
+  if (toggle) toggle.addEventListener("change", renderAICostEstimate);
 }
 
 if (ciSaveBtn) {
@@ -402,7 +477,9 @@ if (ciClearBtn) {
         ciKeyInput.dataset.dirty = "false";
         ciKeyInput.placeholder = "sk-ant-...";
       }
+      aiSettings = Object.assign({}, aiSettings || {}, { anthropic_key_set: false });
       setCIStatus("Key not set.", "warn");
+      renderAICostEstimate();
     } catch {
       setCIStatus("Clear failed", "warn");
     } finally {

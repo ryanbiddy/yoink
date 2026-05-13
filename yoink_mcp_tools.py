@@ -407,6 +407,28 @@ def classify_hook(args: dict[str, Any]) -> dict[str, Any]:
         return _err(b._short_reason(e.reason))
 
 
+def get_taxonomy(args: dict[str, Any]) -> dict[str, Any]:
+    b = _b()
+    channel = args.get("channel")
+    hook_type = args.get("hook_type")
+    if channel is not None and not isinstance(channel, str):
+        return _err("channel must be a string")
+    if hook_type is not None:
+        if not isinstance(hook_type, str):
+            return _err("hook_type must be a string")
+        hook_type = hook_type.strip().lower()
+        if hook_type and hook_type not in b.HOOK_TYPES:
+            return _err("hook_type invalid")
+    limit = _limit_int(args.get("limit"), default=50, low=1, high=500)
+    return _ok(
+        taxonomy=b._query_taxonomy(
+            channel=channel,
+            hook_type=hook_type,
+            limit=limit,
+        )
+    )
+
+
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {
         "type": "object",
@@ -513,6 +535,41 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         }, ["slug"]),
         handler=classify_hook,
         rate_limiter=_RateLimiter(10),
+    ),
+    "get_taxonomy": ToolSpec(
+        name="get_taxonomy",
+        description=(
+            "Return captured Hook Type taxonomy rows, optionally filtered by "
+            "channel and hook_type."
+        ),
+        input_schema=_schema({
+            "channel": {
+                "type": "string",
+                "description": "Exact channel name to filter by. Optional.",
+            },
+            "hook_type": {
+                "type": "string",
+                "description": "Hook type to filter by. Optional.",
+                "enum": [
+                    "curiosity_gap",
+                    "question",
+                    "contrarian",
+                    "story_open",
+                    "promise_list",
+                    "demo",
+                    "authority",
+                    "stakes",
+                    "other",
+                ],
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 50,
+            },
+        }),
+        handler=get_taxonomy,
     ),
 }
 

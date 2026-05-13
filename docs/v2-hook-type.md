@@ -154,4 +154,4 @@ Starting in v2.1, every successful Hook Type classification is captured in `%LOC
 }
 ```
 
-Records dedupe by `video_id`: re-classifying the same video updates the existing record instead of appending a duplicate. Corrupt `taxonomy.json` is logged and replaced with a fresh array. There is no backfill from existing yoinks; the taxonomy starts collecting from this version forward. No v2.1 endpoint exposes the file yet.
+Records dedupe by `video_id`: re-classifying the same video updates the existing record instead of appending a duplicate. Corrupt `taxonomy.json` is logged and replaced with a fresh array. There is no backfill from existing yoinks; the taxonomy starts collecting from this version forward. Sprint 10 exposes the captured rows through token-gated `GET /taxonomy` and the MCP `get_taxonomy` tool.

@@ -20,6 +20,12 @@
     "#actions-inner",
     "#actions",
   ];
+  const SHORTS_ANCHOR_SELECTORS = [
+    "ytd-reel-video-renderer[is-active] #actions",
+    "ytd-reel-video-renderer[is-active] ytd-reel-player-overlay-renderer #actions",
+    "ytd-shorts #actions",
+    "#shorts-container #actions",
+  ];
 
   // ---- Styles (scoped via the unique class prefix) ----------------------
   const STYLE_ID = "stc-yt-styles";
@@ -103,6 +109,12 @@
         animation: stc-yt-spin 0.7s linear infinite;
       }
       @keyframes stc-yt-spin { to { transform: rotate(360deg); } }
+      .${BTN_CLASS}.stc-yt-shorts {
+        margin: 8px 0 0 0;
+        width: 72px;
+        justify-content: center;
+        padding: 0 10px;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -303,9 +315,25 @@
   });
 
   // ---- Click handler ----------------------------------------------------
+  function normalizedCurrentVideoUrl() {
+    return STC.normalizeYouTubeUrl(window.location.href);
+  }
+
+  function isSupportedVideoPage() {
+    return !!normalizedCurrentVideoUrl();
+  }
+
+  function isShortsPage() {
+    try {
+      return new URL(window.location.href).pathname.startsWith("/shorts/");
+    } catch {
+      return false;
+    }
+  }
+
   async function onClick(btn) {
-    const rawUrl = window.location.href;
-    if (!/youtube\.com\/watch/.test(rawUrl)) return;
+    const url = normalizedCurrentVideoUrl();
+    if (!url) return;
 
     // Gate by live server status: don't even attempt yoink while the helper
     // is down — pop the setup guide instead. The "checking" state is
@@ -317,7 +345,6 @@
       return;
     }
 
-    const url = STC.normalizeYouTubeUrl(rawUrl) || rawUrl;
     activeSession = await getActiveFromStorage(); // freshen in case popup just changed it
     const interval = await STC.getInterval();
 
@@ -451,7 +478,10 @@
 
   // ---- Inject -----------------------------------------------------------
   function findAnchor() {
-    for (const sel of ANCHOR_SELECTORS) {
+    const selectors = isShortsPage()
+      ? SHORTS_ANCHOR_SELECTORS.concat(ANCHOR_SELECTORS)
+      : ANCHOR_SELECTORS;
+    for (const sel of selectors) {
       const el = document.querySelector(sel);
       if (el) return el;
     }
@@ -459,10 +489,14 @@
   }
 
   function injectButton() {
-    if (!/youtube\.com\/watch/.test(window.location.href)) return false;
-    if (document.getElementById(BTN_ID)) return true;
-
+    if (!isSupportedVideoPage()) return false;
     const anchor = findAnchor();
+    const existing = document.getElementById(BTN_ID);
+    if (existing) {
+      existing.classList.toggle("stc-yt-shorts", isShortsPage());
+      if (anchor && existing.parentElement !== anchor) anchor.appendChild(existing);
+      return true;
+    }
     if (!anchor) return false;
 
     injectStyles();
@@ -470,6 +504,7 @@
     const btn = document.createElement("button");
     btn.id = BTN_ID;
     btn.className = BTN_CLASS;
+    if (isShortsPage()) btn.classList.add("stc-yt-shorts");
     btn.type = "button";
     setButtonState(btn, "default", defaultLabel());
     applyStatusToButton(btn);
@@ -498,10 +533,7 @@
   // page refresh or a different tab doesn't re-fire it.
   const AUTO_YOINK_TTL_MS = 60_000;
   function currentVideoId() {
-    try {
-      const u = new URL(window.location.href);
-      return u.searchParams.get("v");
-    } catch { return null; }
+    return STC.extractVideoId(window.location.href);
   }
   async function maybeAutoYoink(btn) {
     const stored = await new Promise((r) => {

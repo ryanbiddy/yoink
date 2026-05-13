@@ -26,7 +26,57 @@ Protocol/validation failures use non-200 HTTP status codes:
 
 Handled application failures use the v1 pattern: HTTP 200 with `{"ok": false, "error": "..."}`.
 
+## URL formats supported
+
+Single-video entry points (`/extract`, MCP `yoink_video`, and v1 session adds) accept these YouTube video URL shapes and canonicalize them to `https://www.youtube.com/watch?v=<id>` before extraction:
+
+- `https://www.youtube.com/watch?v=<id>`
+- `https://youtu.be/<id>`
+- `https://www.youtube.com/shorts/<id>`
+- `https://www.youtube.com/embed/<id>`
+
+Playlist entry points accept `youtube.com/playlist?list=<id>` and `youtube.com/watch?v=<id>&list=<id>`, but intentionally drop the selected video position and process the playlist from the first item after applying the 10-video cap.
+
 ## Endpoint reference
+
+### GET /settings/pricing
+
+Return the local cost-estimator constants used by setup.html for optional BYO Anthropic features. This endpoint does not call Anthropic and does not inspect the saved API key.
+
+Auth: `X-Yoink-Token` required.
+
+Request body: none.
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "pricing": {
+    "model": "claude-haiku-4-5-20251001",
+    "display_model": "Claude Haiku 4.5",
+    "input_per_million": 1.0,
+    "output_per_million": 5.0,
+    "est_tokens": {
+      "ci": { "input": 5000, "output": 500 },
+      "hook": { "input": 1200, "output": 80 }
+    },
+    "est_per_video": {
+      "ci": 0.0075,
+      "hook": 0.0016,
+      "both": 0.0091
+    },
+    "source": "https://docs.claude.com/en/docs/about-claude/pricing",
+    "source_checked": "2026-05-12"
+  }
+}
+```
+
+Notes:
+
+- Estimates are deliberately conservative approximations for trust/UX, not billing guarantees.
+- Comment Intelligence estimate assumes 5,000 input tokens and 500 output tokens.
+- Hook Type estimate assumes 1,200 input tokens and 80 output tokens.
 
 ### POST /playlist/preview
 
@@ -639,6 +689,50 @@ Error responses:
 | 404 | `file not found` | File is missing or not a regular file. |
 | 415 | `unsupported file type` | Extension or magic bytes are not an allowed image type. |
 
+### GET /taxonomy
+
+Return Hook Type taxonomy rows captured from successful classifications. This is the HTTP mirror of the MCP `get_taxonomy` tool and is intended as the foundation for future taxonomy viewer/export work.
+
+Auth: `X-Yoink-Token` required.
+
+Request body: none.
+
+Query parameters:
+
+| Field | Type | Required | Notes |
+|---|---:|---:|---|
+| `channel` | string | no | Exact channel-name filter, case-insensitive. |
+| `hook_type` | string | no | One of the Hook Type categories. |
+| `limit` | integer | no | Defaults to 50. Clamped to 1-500. |
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "taxonomy": [
+    {
+      "video_id": "abc123DEF45",
+      "hook_type": "curiosity_gap",
+      "hook_explanation": "The opening withholds the payoff while promising a counter-intuitive reveal.",
+      "channel": "Example Channel",
+      "title": "How creators build durable content systems",
+      "classified_at": "2026-05-12T10:30:00"
+    }
+  ]
+}
+```
+
+Rows sort by `classified_at` descending. Corrupt or missing `taxonomy.json` yields an empty array and a server log warning rather than crashing the helper.
+
+Error responses:
+
+| HTTP status | Error string | Meaning |
+|---:|---|---|
+| 400 | `hook_type invalid` | `hook_type` is not one of the allowed categories. |
+| 400 | `limit invalid` | `limit` cannot be parsed as an integer. |
+| 403 | `missing or invalid token` | `X-Yoink-Token` missing or stale. |
+
 ### MCP HTTP JSON-RPC helper endpoints
 
 Yoink v2 Sprint 4 adds MCP over stdio plus an experimental local HTTP JSON-RPC helper. Stdio clients launch `yoink_mcp.py` and are the officially supported MCP transport for launch. HTTP clients can use the existing helper server under `/mcp/v1` for direct JSON-RPC POST calls, but this is not a spec-complete SSE or Streamable HTTP implementation.
@@ -752,6 +846,7 @@ Tools currently exposed:
 - `get_yoink_corpus`
 - `analyze_comments`
 - `classify_hook`
+- `get_taxonomy`
 
 Full schemas and return shapes live in `docs/v2-mcp.md`.
 

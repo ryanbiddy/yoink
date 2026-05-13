@@ -95,6 +95,14 @@ KEYRING_ANTHROPIC_USERNAME = "anthropic_key"
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_VERSION = "2023-06-01"
+# Pricing source: Anthropic Claude pricing docs, verified 2026-05-12:
+# https://docs.claude.com/en/docs/about-claude/pricing
+ANTHROPIC_PRICING_INPUT_PER_MILLION = 1.00
+ANTHROPIC_PRICING_OUTPUT_PER_MILLION = 5.00
+ANTHROPIC_CI_EST_INPUT_TOKENS = 5_000
+ANTHROPIC_CI_EST_OUTPUT_TOKENS = 500
+ANTHROPIC_HOOK_EST_INPUT_TOKENS = 1_200
+ANTHROPIC_HOOK_EST_OUTPUT_TOKENS = 80
 
 
 def _load_or_create_token() -> str:
@@ -317,6 +325,48 @@ def _public_settings(data: dict | None = None) -> dict:
             data.get("smart_screenshot_picker_enabled")
         ),
         "anthropic_key_set": bool(key and not data.get("anthropic_key_invalid")),
+    }
+
+
+def _anthropic_estimated_cost(input_tokens: int, output_tokens: int) -> float:
+    return round(
+        (input_tokens / 1_000_000) * ANTHROPIC_PRICING_INPUT_PER_MILLION
+        + (output_tokens / 1_000_000) * ANTHROPIC_PRICING_OUTPUT_PER_MILLION,
+        6,
+    )
+
+
+def _anthropic_pricing_payload() -> dict:
+    ci = _anthropic_estimated_cost(
+        ANTHROPIC_CI_EST_INPUT_TOKENS,
+        ANTHROPIC_CI_EST_OUTPUT_TOKENS,
+    )
+    hook = _anthropic_estimated_cost(
+        ANTHROPIC_HOOK_EST_INPUT_TOKENS,
+        ANTHROPIC_HOOK_EST_OUTPUT_TOKENS,
+    )
+    return {
+        "model": ANTHROPIC_MODEL,
+        "display_model": "Claude Haiku 4.5",
+        "input_per_million": ANTHROPIC_PRICING_INPUT_PER_MILLION,
+        "output_per_million": ANTHROPIC_PRICING_OUTPUT_PER_MILLION,
+        "est_tokens": {
+            "ci": {
+                "input": ANTHROPIC_CI_EST_INPUT_TOKENS,
+                "output": ANTHROPIC_CI_EST_OUTPUT_TOKENS,
+            },
+            "hook": {
+                "input": ANTHROPIC_HOOK_EST_INPUT_TOKENS,
+                "output": ANTHROPIC_HOOK_EST_OUTPUT_TOKENS,
+            },
+        },
+        "est_per_video": {
+            "ci": ci,
+            "hook": hook,
+            "both": round(ci + hook, 6),
+        },
+        "source": "https://docs.claude.com/en/docs/about-claude/pricing",
+        "source_checked": "2026-05-12",
     }
 
 
@@ -1280,6 +1330,48 @@ def _append_hook_taxonomy(context: dict, analysis: dict) -> None:
             log.warning("taxonomy.json write failed: %s", e)
 
 
+def _read_taxonomy_rows() -> list[dict]:
+    with _taxonomy_lock:
+        if not TAXONOMY_PATH.exists():
+            return []
+        try:
+            raw = json.loads(TAXONOMY_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            log.warning("taxonomy.json read failed; returning empty taxonomy: %s", e)
+            return []
+        if not isinstance(raw, list):
+            log.warning("taxonomy.json schema invalid; returning empty taxonomy")
+            return []
+        return [r for r in raw if isinstance(r, dict)]
+
+
+def _query_taxonomy(*, channel: str | None = None,
+                    hook_type: str | None = None,
+                    limit: int = 50) -> list[dict]:
+    channel_filter = (channel or "").strip().lower()
+    hook_filter = (hook_type or "").strip().lower()
+    rows = []
+    for i, row in enumerate(_read_taxonomy_rows()):
+        if hook_filter and row.get("hook_type") != hook_filter:
+            continue
+        if channel_filter and (row.get("channel") or "").strip().lower() != channel_filter:
+            continue
+        rows.append({
+            "_index": i,
+            "video_id": row.get("video_id") or None,
+            "hook_type": row.get("hook_type") or None,
+            "hook_explanation": row.get("hook_explanation") or None,
+            "channel": row.get("channel") or None,
+            "title": row.get("title") or None,
+            "classified_at": row.get("classified_at") or None,
+        })
+    rows.sort(key=lambda r: (r.get("classified_at") or "", r.get("_index") or 0),
+              reverse=True)
+    for row in rows:
+        row.pop("_index", None)
+    return rows[:limit]
+
+
 def _hook_type_context(metadata: dict, entries: list, top_comment: str | None = None) -> dict:
     transcript = " ".join(t for _s, _e, t in entries)
     return {
@@ -1807,7 +1899,10 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
                 "--write-subs",
                 "--sub-lang", "en.*,en",
                 "--convert-subs", "srt",
-                "-f", "worst[height>=360]/worst",
+                # Require a video stream. Plain `worst` can pick audio-only
+                # on some Shorts, which makes ffmpeg screenshot extraction
+                # fail with "no packets" even though yt-dlp succeeded.
+                "-f", "worst*[vcodec!=none][height>=360]/worst*[vcodec!=none]/worst",
                 "-o", str(output_folder / "video.%(ext)s"),
                 url,
             ],
@@ -3493,6 +3588,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_session_active()
         if bare == "/settings":
             return self._handle_settings_get()
+        if bare == "/settings/pricing":
+            return self._handle_settings_pricing()
         if bare == "/file":
             return self._handle_file()
         if bare == "/mcp/v1/config":
@@ -3511,6 +3608,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_jobs_list()
         if bare.startswith("/jobs/"):
             return self._handle_job_get(bare)
+        if bare == "/taxonomy":
+            return self._handle_taxonomy()
         log.info("GET %s -> 404", self.path)
         self._send_json(404, {"ok": False, "error": "not found"})
 
@@ -3544,6 +3643,9 @@ class Handler(BaseHTTPRequestHandler):
     # ---- /settings ----
     def _handle_settings_get(self):
         self._send_json(200, {"ok": True, "settings": _public_settings()})
+
+    def _handle_settings_pricing(self):
+        self._send_json(200, {"ok": True, "pricing": _anthropic_pricing_payload()})
 
     def _handle_settings_post(self, body: dict):
         boolean_fields = (
@@ -3966,6 +4068,36 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {
             "ok": True,
             "jobs": _list_public_jobs(kind or None),
+        })
+
+    # ---- /taxonomy ----
+    def _handle_taxonomy(self):
+        qs = parse_qs(urlparse(self.path).query)
+        channel = (qs.get("channel") or [None])[0]
+        hook_type = (qs.get("hook_type") or [None])[0]
+        if hook_type:
+            hook_type = hook_type.strip().lower()
+            if hook_type not in HOOK_TYPES:
+                return self._send_json(400, {
+                    "ok": False,
+                    "error": "hook_type invalid",
+                })
+        limit_raw = (qs.get("limit") or ["50"])[0]
+        try:
+            limit = int(limit_raw)
+        except (TypeError, ValueError):
+            return self._send_json(400, {
+                "ok": False,
+                "error": "limit invalid",
+            })
+        limit = max(1, min(500, limit))
+        self._send_json(200, {
+            "ok": True,
+            "taxonomy": _query_taxonomy(
+                channel=channel,
+                hook_type=hook_type,
+                limit=limit,
+            ),
         })
 
     def _handle_extract(self, body: dict):

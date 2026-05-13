@@ -117,6 +117,35 @@ Failed validation:
 }
 ```
 
+`GET /settings/pricing`
+
+Used by setup.html's cost estimator. It returns local pricing constants and per-video estimates for optional AI features. It does not call Anthropic and never includes the saved API key.
+
+```json
+{
+  "ok": true,
+  "pricing": {
+    "model": "claude-haiku-4-5-20251001",
+    "display_model": "Claude Haiku 4.5",
+    "input_per_million": 1.0,
+    "output_per_million": 5.0,
+    "est_tokens": {
+      "ci": { "input": 5000, "output": 500 },
+      "hook": { "input": 1200, "output": 80 }
+    },
+    "est_per_video": {
+      "ci": 0.0075,
+      "hook": 0.0016,
+      "both": 0.0091
+    },
+    "source": "https://docs.claude.com/en/docs/about-claude/pricing",
+    "source_checked": "2026-05-12"
+  }
+}
+```
+
+The setup page shows the estimator only when a key is present and at least one paid AI feature toggle is enabled. Pricing is a transparent estimate, not a billing guarantee.
+
 ## Model choice
 
 The first implementation uses `claude-haiku-4-5-20251001` through Anthropic's Messages API. It is the cheapest model expected to produce usable clustering and extraction quality for top-comment analysis. The model name is centralized in `server.py` as `ANTHROPIC_MODEL`.
