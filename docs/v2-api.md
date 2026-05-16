@@ -1,6 +1,6 @@
 # Yoink v2 API contract
 
-Status: implemented through v2.1 Sprint 7
+Status: implemented through v2.1 Sprint 11
 Scope: Playlist Mode, settings, file serving, and MCP HTTP backend contract
 Non-goal: UI design, Channel Decoder, Niche Corpus, or Mac installer work
 
@@ -36,6 +36,16 @@ Single-video entry points (`/extract`, MCP `yoink_video`, and v1 session adds) a
 - `https://www.youtube.com/embed/<id>`
 
 Playlist entry points accept `youtube.com/playlist?list=<id>` and `youtube.com/watch?v=<id>&list=<id>`, but intentionally drop the selected video position and process the playlist from the first item after applying the 10-video cap.
+
+## Single-video multimodal clipboard cap
+
+Single-video `/extract` still writes the complete screenshot set to disk. The clipboard paste intentionally embeds a smaller, evenly distributed subset so long videos fit real Claude/ChatGPT context windows. Default: `clipboard_screenshot_cap: 4`; valid range: `0-12`. When a video has more screenshots than the cap, the clipboard corpus includes a near-top note:
+
+```text
+[Showing 4 of 18 screenshots in clipboard; full set on disk]
+```
+
+The setting is returned by `GET /settings` and accepted by `POST /settings`. Setting it to `0` produces a text-only clipboard corpus while keeping all screenshots on disk.
 
 ## Endpoint reference
 
@@ -671,7 +681,7 @@ Path validation rules:
 - Resolve the absolute path before serving.
 - Reject missing, relative, malformed, or parent-directory paths.
 - Reject any raw or resolved path containing a `..` path segment.
-- Reject paths that do not resolve under the Yoink output root (`Desktop\Yoink`, resolved through the same Windows known-folder logic used for single-video and session output).
+- Reject paths that do not resolve under the Yoink output root (`Desktop\Yoink`, resolved through the same Windows known-folder logic used for single-video and session output, or `YOINK_OUTPUT_DIR` when explicitly set in dev/support mode).
 - Reject missing paths and non-regular files.
 - Reject files larger than 10 MB.
 - Allow only `.png`, `.jpg`, `.jpeg`, and `.webp`.
@@ -1036,6 +1046,17 @@ Completed `result` shape:
       "json_path": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews\\video-1\\video-1.json",
       "ok": true,
       "error": null
+    },
+    {
+      "index": 2,
+      "title": "Private or rate-limited video",
+      "url": "https://www.youtube.com/watch?v=def456GHI78",
+      "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews\\private-or-rate-limited-video",
+      "md_path": null,
+      "json_path": null,
+      "failed_marker_path": "C:\\Users\\Ryan\\Desktop\\Yoink\\_sessions\\creator-strategy-interviews\\private-or-rate-limited-video\\FAILED.txt",
+      "ok": false,
+      "error": "yt-dlp failed: sign in to confirm you're not a bot"
     }
   ]
 }
@@ -1068,6 +1089,14 @@ Important transport rule:
 
 Clients must not infer that `combined_md_text` is byte-for-byte identical to the file at `combined_md_path`.
 
+## Playlist pacing and per-video failures
+
+Playlist extraction deliberately sleeps between videos before the next yt-dlp/ffmpeg pass. Default: `5` seconds, configurable for dev/support via `YOINK_PLAYLIST_SLEEP_SEC` (`0-120`). This makes 10-video playlist jobs slower, but lowers the chance that YouTube rate-limits a burst of back-to-back downloads.
+
+If yt-dlp returns a rate-limit-like error (`429`, `too many requests`, `rate limit`, `sign in to confirm you're not a bot`, captcha/bot checks), the worker continues the playlist after exponential backoff: 30s, 60s, 120s, 240s, then capped at 300s. Individual failures increment `videos_failed`; the job still completes if at least one selected video succeeds.
+
+When a playlist item fails after creating or reserving an output folder, Yoink writes `FAILED.txt` into that per-video folder with the URL, playlist index, timestamp, and short failure reason. This keeps the disk output honest: a user inspecting the folder can distinguish a failed partial from a successful corpus.
+
 ## Backward compatibility
 
 The following v1 endpoints keep their current shapes and semantics:
@@ -1095,7 +1124,7 @@ No v2 playlist work may break existing single-video, session, health, token, rec
 Claude Code owns `extension/lib/extract.js`. Backend contracts now need these client helpers:
 
 - `getScreenshotThumbnail(path)` wraps authenticated `GET /file?path=<absolute-path>`, validates the response is an image, and returns a blob URL for use in `<img src>`.
-- `getSettings`, `updateSettings`, and `testAnthropicKey` already exist. Confirm their settings shape includes `hook_type_enabled` and `smart_screenshot_picker_enabled` alongside `comment_intelligence_enabled` and `anthropic_key_set`.
+- `getSettings`, `updateSettings`, and `testAnthropicKey` already exist. Confirm their settings shape includes `hook_type_enabled`, `smart_screenshot_picker_enabled`, and `clipboard_screenshot_cap` alongside `comment_intelligence_enabled` and `anthropic_key_set`.
 - Sprint 4 MCP needs no new `extract.js` helpers. setup.html uses existing `STC.getToken()` plus authenticated fetch to `GET /mcp/v1/config`.
 
 ## Error model

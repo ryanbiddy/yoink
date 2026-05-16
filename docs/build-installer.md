@@ -131,6 +131,20 @@ In dev mode (running from the repo) `bin\` doesn't exist and the line is a no-op
 
 yt-dlp is invoked as `[sys.executable, "-m", "yt_dlp"]`, so the right interpreter (the embeddable) drives the right `yt_dlp` package automatically.
 
+### Dev mode output root override
+
+By default, Yoink writes extracted videos under the user's Desktop output root (`Desktop\Yoink`, honoring Windows known-folder / OneDrive Desktop redirection). In dev mode, that can be awkward if the repo itself lives on the Desktop: personal yoinks may appear inside or next to the worktree.
+
+Set `YOINK_OUTPUT_DIR` to an existing writable directory before starting `server.py` to override the output root:
+
+```powershell
+New-Item -ItemType Directory -Force C:\TestYoinkOut | Out-Null
+$env:YOINK_OUTPUT_DIR = 'C:\TestYoinkOut'
+python server.py
+```
+
+If the env var is missing, points at a non-existent path, or is not writable, Yoink falls back to the normal Desktop root. The installed Start Menu shortcut does not set this variable; it is intended for local development and support smoke tests.
+
 ## Known issues
 
 ### Antivirus warnings on unsigned builds

@@ -14,7 +14,7 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 v2 ships two adoption paths for two audiences:
 
 - **Chrome extension** (the creator path): one-click yoinks, plus Playlist Mode (up to 10 videos per job), AI-powered Hook Type classification, Comment Intelligence, and Smart Screenshot Picker.
-- **MCP server** (the agent path): 9 tools your AI can call directly. Officially tested with Claude Desktop and Cursor; works with most MCP-compatible clients.
+- **MCP server** (the agent path): 10 tools your AI can call directly. Officially tested with Claude Desktop and Cursor; works with most MCP-compatible clients.
 
 AI-powered features are opt-in and BYO Anthropic API key (stored securely in Windows Credential Manager). The core extraction flow remains fully local — nothing leaves your machine except the YouTube fetch.
 
@@ -24,7 +24,7 @@ AI-powered features are opt-in and BYO Anthropic API key (stored securely in Win
 - One-click "Yoink" button under every YouTube video
 - Right-click any thumbnail to yoink without opening the video
 - Full timestamped transcript with chapter awareness
-- Timestamped screenshots throughout the video
+- Timestamped screenshots throughout the video, with 4 embedded in the clipboard by default to keep long videos pasteable
 - Top 50 comments with author and like count
 - Full video metadata (views, likes, tags, description, upload date)
 - Thumbnail image and channel context (subscriber count, recent videos)
@@ -41,7 +41,7 @@ AI-powered features are opt-in and BYO Anthropic API key (stored securely in Win
 - **Smart Screenshot Picker** — opt-in grid for choosing which screenshots make the clipboard.
 
 **For agent developers (v2)**
-- **MCP server** with 9 tools: `yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`.
+- **MCP server** with 10 tools: `yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`, `get_taxonomy`.
 - Stdio transport (officially tested with Claude Desktop + Cursor).
 - Local HTTP JSON-RPC transport (experimental).
 - Setup page generates copy-pasteable config snippets for each major client.
@@ -69,7 +69,7 @@ For developers running from source, see [REQUIREMENTS.md](./REQUIREMENTS.md). Bu
 **Extension flow:**
 1. Click "Yoink" under any YouTube video
 2. Yoink extracts transcript, screenshots, comments, metadata
-3. Markdown corpus copied to clipboard, opens Claude or ChatGPT
+3. Markdown corpus copied to clipboard, with 4 screenshots embedded by default and the full screenshot set saved on disk
 4. Paste, run a prompt, get analysis
 
 **Agent flow (MCP):**

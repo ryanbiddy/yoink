@@ -19,7 +19,7 @@ Yoink is the missing layer between YouTube and your AI.
 Click the **Yoink** button under any YouTube video and you get a single, structured markdown corpus auto-loaded onto your clipboard:
 
 - The full timestamped transcript, chapter-aware
-- Timestamped screenshots throughout the video
+- Timestamped screenshots throughout the video, with a paste-safe subset embedded in the clipboard
 - The top 50 comments, with author and like count
 - Full video metadata — views, likes, tags, description, upload date
 - The thumbnail
@@ -47,13 +47,13 @@ Yoink ships a local MCP server with 10 tools your AI agent can call directly: `y
 
 ### Optional AI-powered features (BYO Anthropic API key)
 
-Yoink stays free and local-only by default. Three optional features call the Anthropic API using your own API key (stored securely via Windows Credential Manager — never in plaintext):
+Yoink stays free and local-only by default. Two optional analysis features call the Anthropic API using your own API key (stored securely via Windows Credential Manager — never in plaintext). Smart Screenshot Picker stays local:
 
 - **Comment Intelligence** — clusters comment themes, extracts mentioned products, flags notable disagreements
 - **Hook Type classification** — classifies each video's opening style across 9 hook categories
 - **Smart Screenshot Picker** — opt-in grid for selecting which screenshots make the clipboard
 
-All three are off by default. Enable per feature on the setup page. Your API key never leaves your machine except for the calls those features make to Anthropic on your behalf. Yoink itself collects nothing.
+All three are off by default. Enable per feature on the setup page. Your API key never leaves your machine except for the Comment Intelligence and Hook Type calls made to Anthropic on your behalf. Yoink itself collects nothing.
 
 ### Privacy summary
 
@@ -67,7 +67,7 @@ All three are off by default. Enable per feature on the setup page. Your API key
 1. Install the extension and run the local Yoink helper (a small Python server bundled with the install).
 2. Open any YouTube video. Click the **Yoink** button under the player (or right-click any thumbnail).
 3. Yoink extracts transcript, screenshots, comments, channel context, and metadata into one `<video-slug>.md` file (e.g. `karpathy-deep-dive-into-llms.md`) under `Desktop\Yoink\<topic>\<slug>\`. A structured `<slug>.json` sidecar lands beside it for programmatic use. A master `_all-yoinks-index.md` at the root tracks every yoink you've done.
-4. The clipboard version is **multimodal**: same content as the on-disk file, but with up to 12 screenshots inlined as base64 images. Paste into Claude or ChatGPT and the AI sees the transcript text **and** the screenshots in one shot — no separate uploads.
+4. The clipboard version is **multimodal**: same content as the on-disk file, but with 4 screenshots inlined as base64 images by default (configurable 0-12). Paste into Claude or ChatGPT and the AI sees the transcript text **and** key screenshots in one shot — no separate uploads. The full screenshot set stays on disk.
 
 ### Playlist Mode
 
@@ -122,7 +122,7 @@ The Web Store will ask why each permission is requested. Pre-drafted answers:
 
 - **`clipboardWrite`** — Yoink writes the extracted markdown corpus to the user's clipboard so they can paste it into Claude or ChatGPT.
 - **`notifications`** — surfaces success and error toasts (e.g., "Yoinked! Saved to: Social Media Research.") so the user knows when an extraction completes.
-- **`storage`** — persists user settings (screenshot interval, active research session, queue state, last-yoink affordance state) across browser sessions.
+- **`storage`** — persists user settings (screenshot interval, clipboard screenshot cap, active research session, queue state, last-yoink affordance state) across browser sessions.
 - **`contextMenus`** — adds "Yoink this video" / "Yoink this page" / "Yoink into session" entries on YouTube right-click menus.
 - **`activeTab`** — reads the current YouTube URL when the user clicks the extension action.
 - **`offscreen`** — the MV3 service worker uses an offscreen document to access the clipboard API (the only supported path in MV3).

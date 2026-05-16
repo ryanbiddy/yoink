@@ -75,6 +75,24 @@ LONG_VIDEO_SECONDS = 2 * 60 * 60       # 2 hours -- log warning above this
 YTDLP_TIMEOUT_SEC = 30 * 60            # main extract timeout
 COMMENTS_TIMEOUT_SEC = 5 * 60
 FFMPEG_TIMEOUT_SEC = 15 * 60
+CLIPBOARD_SCREENSHOT_CAP_DEFAULT = 4
+CLIPBOARD_SCREENSHOT_CAP_MAX = 12
+
+
+def _env_float(name: str, default: float, *, low: float, high: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(low, min(high, value))
+
+
+PLAYLIST_SLEEP_SEC = _env_float("YOINK_PLAYLIST_SLEEP_SEC", 5.0, low=0.0, high=120.0)
+PLAYLIST_RATE_LIMIT_BACKOFF_BASE_SEC = 30.0
+PLAYLIST_RATE_LIMIT_BACKOFF_MAX_SEC = 5 * 60.0
 
 # ---- Auth token (P0-1) ----------------------------------------------------
 # Per-install random token. Persisted next to server.py (which lives in
@@ -168,6 +186,7 @@ def _default_settings() -> dict:
         "comment_intelligence_enabled": False,
         "hook_type_enabled": False,
         "smart_screenshot_picker_enabled": False,
+        "clipboard_screenshot_cap": CLIPBOARD_SCREENSHOT_CAP_DEFAULT,
         "anthropic_key_invalid": False,
         "updated_at": None,
     }
@@ -184,6 +203,14 @@ def _normalize_settings(data: dict) -> dict:
     clean["hook_type_enabled"] = bool(clean.get("hook_type_enabled"))
     clean["smart_screenshot_picker_enabled"] = bool(
         clean.get("smart_screenshot_picker_enabled")
+    )
+    try:
+        cap = int(clean.get("clipboard_screenshot_cap"))
+    except (TypeError, ValueError):
+        cap = CLIPBOARD_SCREENSHOT_CAP_DEFAULT
+    clean["clipboard_screenshot_cap"] = max(
+        0,
+        min(CLIPBOARD_SCREENSHOT_CAP_MAX, cap),
     )
     clean["anthropic_key_invalid"] = bool(clean.get("anthropic_key_invalid"))
     return clean
@@ -323,6 +350,9 @@ def _public_settings(data: dict | None = None) -> dict:
         "hook_type_enabled": bool(data.get("hook_type_enabled")),
         "smart_screenshot_picker_enabled": bool(
             data.get("smart_screenshot_picker_enabled")
+        ),
+        "clipboard_screenshot_cap": int(
+            data.get("clipboard_screenshot_cap", CLIPBOARD_SCREENSHOT_CAP_DEFAULT)
         ),
         "anthropic_key_set": bool(key and not data.get("anthropic_key_invalid")),
     }
@@ -564,7 +594,41 @@ def _get_desktop_dir() -> Path:
     return fallback
 
 
-DESKTOP_ROOT = _get_desktop_dir() / "Yoink"
+def _is_writable_dir(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    probe = path / f".yoink-write-test-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _get_output_root() -> Path:
+    """Return the Yoink output root.
+
+    Dev mode can set YOINK_OUTPUT_DIR to keep personal yoinks out of a repo
+    that happens to live on the Desktop. The override must already exist and
+    be writable; otherwise Yoink falls back to the Desktop\\Yoink folder.
+    """
+    override = (os.environ.get("YOINK_OUTPUT_DIR") or "").strip()
+    if override:
+        try:
+            candidate = Path(override).expanduser().resolve()
+            if _is_writable_dir(candidate):
+                return candidate
+        except OSError:
+            pass
+    return _get_desktop_dir() / "Yoink"
+
+
+DESKTOP_ROOT = _get_output_root()
 SESSIONS_ROOT = DESKTOP_ROOT / "_sessions"
 
 # --- Logging ---------------------------------------------------------------
@@ -666,6 +730,13 @@ def _fmt_int(n) -> str:
         return f"{int(n):,}"
     except (TypeError, ValueError):
         return "—"
+
+
+def _fmt_likes(n) -> str:
+    """Like counts are often hidden by YouTube and exposed as null by yt-dlp."""
+    if n is None:
+        return "not exposed by YouTube for this video"
+    return _fmt_int(n)
 
 
 def _fmt_iso_date(s) -> str:
@@ -805,6 +876,44 @@ def _run_subprocess(cmd: list[str], *, cancel_event: threading.Event | None = No
             proc.returncode, cmd, output=out, stderr=err
         )
     return cp
+
+
+_RATE_LIMIT_PATTERNS = (
+    "http error 429",
+    "rate limit",
+    "rate-limit",
+    "too many requests",
+    "sign in to confirm you're not a bot",
+    "confirm you're not a bot",
+    "captcha",
+)
+
+
+def _error_text(e: BaseException) -> str:
+    if isinstance(e, subprocess.CalledProcessError):
+        stderr = (e.stderr.decode("utf-8", errors="ignore")
+                  if isinstance(e.stderr, bytes) else (e.stderr or ""))
+        stdout = (e.output.decode("utf-8", errors="ignore")
+                  if isinstance(e.output, bytes) else (e.output or ""))
+        return f"{stderr}\n{stdout}"
+    return str(e)
+
+
+def _is_rate_limit_error(e: BaseException) -> bool:
+    text = _error_text(e).lower()
+    return any(pat in text for pat in _RATE_LIMIT_PATTERNS)
+
+
+def _sleep_with_cancel(seconds: float, cancel_event: threading.Event | None) -> None:
+    if seconds <= 0:
+        return
+    deadline = time.monotonic() + seconds
+    while True:
+        _raise_if_cancelled(cancel_event)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
 
 
 def _fetch_metadata(url: str, *,
@@ -1698,7 +1807,7 @@ def _build_yoink_md(metadata: dict, url: str, entries: list, shots: list,
     upload_date = _fmt_iso_date(metadata.get("upload_date"))
     duration = format_duration(metadata.get("duration"))
     views = _fmt_int(metadata.get("view_count"))
-    likes = _fmt_int(metadata.get("like_count"))
+    likes = _fmt_likes(metadata.get("like_count"))
     description = (metadata.get("description") or "").strip()
     tags = metadata.get("tags") or []
     chapters = metadata.get("chapters") or []
@@ -2244,10 +2353,6 @@ def _resolve_corpus_path(folder: Path) -> Path | None:
 # data URIs so a single Ctrl+V into Claude or ChatGPT delivers transcript +
 # images without the user having to re-upload anything.
 #
-# These constants are also surfaced (read-only for v1) in extension/config.js
-# under YOINK_CONFIG.pasteCorpus -- if you change them here, mirror them
-# there so the documented client surface stays accurate.
-PASTE_MAX_SCREENSHOTS = 12
 PASTE_SCREENSHOT_WIDTH = 800
 PASTE_SCREENSHOT_QUALITY = 80
 PASTE_SIZE_WARN_MB = 4
@@ -2262,9 +2367,22 @@ def _select_paste_indices(n: int, target: int) -> list[int]:
     0 and n-1 (linear interpolation lands on those endpoints exactly).
     Returns sorted unique indices, so a small `n` may produce fewer than
     target points after rounding collisions are deduped."""
+    if target <= 0:
+        return []
     if n <= target:
         return list(range(n))
+    if target == 1:
+        return [0]
     return sorted({round(i * (n - 1) / (target - 1)) for i in range(target)})
+
+
+def _clipboard_screenshot_cap() -> int:
+    settings = _read_settings()
+    try:
+        cap = int(settings.get("clipboard_screenshot_cap"))
+    except (TypeError, ValueError):
+        cap = CLIPBOARD_SCREENSHOT_CAP_DEFAULT
+    return max(0, min(CLIPBOARD_SCREENSHOT_CAP_MAX, cap))
 
 
 def _encode_screenshot_b64(path: Path, *, max_width: int, quality: int) -> str:
@@ -2311,7 +2429,8 @@ def _generate_paste_corpus(folder: Path) -> str:
     """Build the clipboard version of the corpus from <folder>/<slug>.md.
 
     Replaces local image refs (`screenshots/shot_NNNN.jpg`) with base64
-    data URIs for up to PASTE_MAX_SCREENSHOTS evenly-distributed shots.
+    data URIs for up to the configured clipboard_screenshot_cap
+    evenly-distributed shots.
     Drops the rest of the per-shot blocks (so the markdown stays readable
     instead of silently shrinking only some images).
 
@@ -2340,7 +2459,15 @@ def _generate_paste_corpus(folder: Path) -> str:
         size_mb = len(md.encode("utf-8")) / (1024 * 1024)
         return _paste_header(size_mb) + md
 
-    selected = set(_select_paste_indices(len(matches), PASTE_MAX_SCREENSHOTS))
+    cap = _clipboard_screenshot_cap()
+    selected = set(_select_paste_indices(len(matches), cap)) if cap > 0 else set()
+    kept_count = len(selected)
+    reduction_note = ""
+    if kept_count < len(matches):
+        reduction_note = (
+            f"[Showing {kept_count} of {len(matches)} screenshots in clipboard; "
+            "full set on disk]\n\n"
+        )
 
     # Counter-aware substitution: we need the index of each match to know
     # whether it's in the selected set, but re.sub doesn't pass an index.
@@ -2369,7 +2496,7 @@ def _generate_paste_corpus(folder: Path) -> str:
 
     paste_md = _SCREENSHOT_BLOCK_RE.sub(replacer, md)
     size_mb = len(paste_md.encode("utf-8")) / (1024 * 1024)
-    return _paste_header(size_mb) + paste_md
+    return _paste_header(size_mb) + reduction_note + paste_md
 
 
 def _scan_yoinks() -> list[dict]:
@@ -3236,6 +3363,25 @@ def _finish_job_cancelled(job_id: str):
     )
 
 
+def _write_failed_marker(folder: Path, *, url: str | None,
+                         index: int | None, reason: str) -> None:
+    lines = [
+        "Yoink playlist item failed",
+        "",
+        f"Timestamp: {_now_iso()}",
+    ]
+    if index is not None:
+        lines.append(f"Playlist index: {index}")
+    if url:
+        lines.append(f"URL: {url}")
+    lines.extend(["", "Reason:", reason, ""])
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(folder / "FAILED.txt", "\n".join(lines))
+    except OSError as e:
+        log.warning("could not write playlist failure marker: %s", e)
+
+
 def _playlist_worker(job_id: str):
     public = _get_public_job(job_id)
     if not public:
@@ -3264,16 +3410,27 @@ def _playlist_worker(job_id: str):
     per_video = []
     videos_done = 0
     videos_failed = 0
+    rate_limit_hits = 0
 
     try:
         for v in videos:
             _raise_if_cancelled(cancel_event)
+            if per_video and PLAYLIST_SLEEP_SEC > 0:
+                _update_job(
+                    job_id,
+                    message=(
+                        f"Waiting {PLAYLIST_SLEEP_SEC:g}s before the next video "
+                        "to avoid YouTube rate limits."
+                    ),
+                )
+                _sleep_with_cancel(PLAYLIST_SLEEP_SEC, cancel_event)
             idx = int(v.get("index") or (len(per_video) + 1))
             current = {
                 "index": idx,
                 "title": v.get("title") or "(untitled)",
                 "url": v.get("url"),
             }
+            target: Path | None = None
             _update_job(
                 job_id,
                 current_video=current,
@@ -3329,13 +3486,26 @@ def _playlist_worker(job_id: str):
             except BaseException as e:
                 msg = friendly_error(e)
                 log.error("playlist job %s video %d failed: %s", job_id, idx, msg)
+                if target is None:
+                    target = _unique_child_folder(
+                        folder,
+                        current.get("title") or v.get("id") or f"video-{idx}",
+                        used_slugs,
+                    )
+                _write_failed_marker(
+                    target,
+                    url=v.get("url"),
+                    index=idx,
+                    reason=msg,
+                )
                 per_video.append({
                     "index": idx,
                     "title": current.get("title") or "(untitled)",
                     "url": v.get("url"),
-                    "folder": None,
+                    "folder": str(target),
                     "md_path": None,
                     "json_path": None,
+                    "failed_marker_path": str(target / "FAILED.txt"),
                     "ok": False,
                     "error": msg,
                 })
@@ -3345,6 +3515,20 @@ def _playlist_worker(job_id: str):
                     videos_failed=videos_failed,
                     message=f"Video {idx} failed; continuing.",
                 )
+                if _is_rate_limit_error(e):
+                    rate_limit_hits += 1
+                    backoff = min(
+                        PLAYLIST_RATE_LIMIT_BACKOFF_MAX_SEC,
+                        PLAYLIST_RATE_LIMIT_BACKOFF_BASE_SEC * (2 ** (rate_limit_hits - 1)),
+                    )
+                    _update_job(
+                        job_id,
+                        message=(
+                            "YouTube appears to be rate-limiting; backing off "
+                            f"for {backoff:g}s before continuing."
+                        ),
+                    )
+                    _sleep_with_cancel(backoff, cancel_event)
 
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -3653,7 +3837,12 @@ class Handler(BaseHTTPRequestHandler):
             "hook_type_enabled",
             "smart_screenshot_picker_enabled",
         )
-        if not any(f in body for f in boolean_fields) and "anthropic_key" not in body:
+        integer_fields = ("clipboard_screenshot_cap",)
+        if (
+            not any(f in body for f in boolean_fields)
+            and not any(f in body for f in integer_fields)
+            and "anthropic_key" not in body
+        ):
             return self._send_json(400, {
                 "ok": False,
                 "error": "settings field required",
@@ -3663,6 +3852,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {
                     "ok": False,
                     "error": f"{field} must be boolean",
+                })
+        if "clipboard_screenshot_cap" in body:
+            cap = body.get("clipboard_screenshot_cap")
+            if isinstance(cap, bool) or not isinstance(cap, int):
+                return self._send_json(400, {
+                    "ok": False,
+                    "error": "clipboard_screenshot_cap must be an integer",
+                })
+            if cap < 0 or cap > CLIPBOARD_SCREENSHOT_CAP_MAX:
+                return self._send_json(400, {
+                    "ok": False,
+                    "error": f"clipboard_screenshot_cap must be 0-{CLIPBOARD_SCREENSHOT_CAP_MAX}",
                 })
         if "anthropic_key" in body and body.get("anthropic_key") is not None:
             if not isinstance(body.get("anthropic_key"), str):
@@ -3680,6 +3881,8 @@ class Handler(BaseHTTPRequestHandler):
         for field in boolean_fields:
             if field in body:
                 data[field] = body[field]
+        if "clipboard_screenshot_cap" in body:
+            data["clipboard_screenshot_cap"] = int(body["clipboard_screenshot_cap"])
         if "anthropic_key" in body:
             raw_key = body.get("anthropic_key")
             key = "" if raw_key is None else raw_key.strip()

@@ -57,6 +57,74 @@ def fmt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _caption_norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _caption_key(text: str) -> str:
+    return _caption_norm(text).casefold()
+
+
+def _suffix_prefix_overlap(prev: str, cur: str, *, min_chars: int = 12) -> int:
+    """Length of prev suffix that matches cur prefix, for rolling captions."""
+    max_len = min(len(prev), len(cur))
+    for n in range(max_len, min_chars - 1, -1):
+        if prev[-n:] == cur[:n]:
+            return n
+    return 0
+
+
+def _dedupe_srt_entries(entries: list[tuple[float, float, str]]):
+    """Collapse YouTube rolling auto-caption fragments conservatively.
+
+    Human captions usually arrive as distinct, non-overlapping sentences; they
+    pass through unchanged. Auto captions often emit a partial line, then a
+    more complete line a second later, and finally a trailing fragment. We keep
+    the latest complete wording rather than tripling the transcript.
+    """
+    out: list[tuple[float, float, str]] = []
+    for start, end, text in entries:
+        text = _caption_norm(text)
+        if not text:
+            continue
+        if not out:
+            out.append((start, end, text))
+            continue
+
+        prev_start, prev_end, prev_text = out[-1]
+        prev_key = _caption_key(prev_text)
+        cur_key = _caption_key(text)
+        starts_near_prev = start - prev_start <= 5.0 or start - prev_end <= 2.0
+
+        # Fully duplicated caption blocks within two seconds are common in
+        # both auto-caption exports and occasionally in translated captions.
+        if cur_key == prev_key and start - prev_start <= 2.0:
+            continue
+
+        if starts_near_prev:
+            if cur_key in prev_key:
+                # New line is just a trailing fragment already contained in
+                # the previous complete line. Exact repeats are only dropped
+                # inside the tighter duplicate window above.
+                if cur_key != prev_key:
+                    continue
+            if cur_key != prev_key and cur_key.startswith(prev_key):
+                # New line is a more complete rewrite of the previous line.
+                out[-1] = (prev_start, end, text)
+                continue
+            overlap = (
+                _suffix_prefix_overlap(prev_key, cur_key)
+                if cur_key != prev_key else 0
+            )
+            if overlap:
+                # Rolling continuation: "hello world" then "world today".
+                out[-1] = (prev_start, end, prev_text.rstrip() + text[overlap:])
+                continue
+
+        out.append((start, end, text))
+    return out
+
+
 def parse_srt(srt_path: Path):
     """Yield (start_sec, end_sec, text) from an SRT file."""
     content = srt_path.read_text(encoding="utf-8", errors="ignore")
@@ -64,7 +132,7 @@ def parse_srt(srt_path: Path):
         r"(\d+):(\d+):(\d+)[,.](\d+)\s+-->\s+(\d+):(\d+):(\d+)[,.](\d+)"
     )
     blocks = re.split(r"\n\s*\n", content.strip())
-    seen = set()
+    entries: list[tuple[float, float, str]] = []
     for block in blocks:
         lines = [ln for ln in block.splitlines() if ln.strip()]
         if len(lines) < 2:
@@ -83,10 +151,10 @@ def parse_srt(srt_path: Path):
         text_lines = [ln for ln in lines if not pattern.search(ln) and not ln.isdigit()]
         text = " ".join(text_lines)
         text = re.sub(r"<[^>]+>", "", text).strip()
-        # YouTube auto-captions repeat heavily; dedupe consecutive identical lines
-        if text and text not in seen:
-            seen.add(text)
-            yield start, end, text
+        if text:
+            entries.append((start, end, text))
+
+    yield from _dedupe_srt_entries(entries)
 
 
 def main():
