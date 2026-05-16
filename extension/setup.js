@@ -78,6 +78,7 @@ const ciClearBtn = document.getElementById("ci-clear-btn");
 const aiCostEstimate = document.getElementById("ai-cost-estimate");
 const hookTypeEnabled = document.getElementById("hook-type-enabled");
 const smartScreenshotPickerEnabled = document.getElementById("smart-screenshot-picker-enabled");
+const clipboardScreenshotCap = document.getElementById("clipboard-screenshot-cap");
 const mcpStdioPath = document.getElementById("mcp-stdio-path");
 const mcpHttpUrl = document.getElementById("mcp-http-url");
 const mcpHttpToken = document.getElementById("mcp-http-token");
@@ -278,6 +279,13 @@ function dollars(n) {
   return `$${n.toFixed(2)}`;
 }
 
+function readClipboardScreenshotCap() {
+  if (!clipboardScreenshotCap) return 4;
+  const parsed = Number.parseInt(clipboardScreenshotCap.value, 10);
+  if (!Number.isFinite(parsed)) return 4;
+  return Math.max(0, Math.min(12, parsed));
+}
+
 function renderAICostEstimate() {
   if (!aiCostEstimate) return;
   const hasKey = !!(
@@ -316,6 +324,7 @@ function setCIControlsEnabled(enabled) {
     ciClearBtn,
     hookTypeEnabled,
     smartScreenshotPickerEnabled,
+    clipboardScreenshotCap,
   ]) {
     if (el) el.disabled = !enabled;
   }
@@ -330,6 +339,12 @@ function renderCISettings(settings) {
   if (hookTypeEnabled) hookTypeEnabled.checked = !!settings.hook_type_enabled;
   if (smartScreenshotPickerEnabled) {
     smartScreenshotPickerEnabled.checked = !!settings.smart_screenshot_picker_enabled;
+  }
+  if (clipboardScreenshotCap) {
+    const cap = Number.isFinite(Number(settings.clipboard_screenshot_cap))
+      ? Number(settings.clipboard_screenshot_cap)
+      : 4;
+    clipboardScreenshotCap.value = String(Math.max(0, Math.min(12, cap)));
   }
   if (ciKeyInput) {
     ciKeyInput.value = "";
@@ -406,6 +421,7 @@ if (ciSaveBtn) {
       smart_screenshot_picker_enabled: !!(
         smartScreenshotPickerEnabled && smartScreenshotPickerEnabled.checked
       ),
+      clipboard_screenshot_cap: readClipboardScreenshotCap(),
     };
     const rawKey = ciKeyInput ? ciKeyInput.value.trim() : "";
     const keyDirty = ciKeyInput && ciKeyInput.dataset.dirty === "true";
@@ -466,6 +482,7 @@ if (ciClearBtn) {
         smart_screenshot_picker_enabled: !!(
           smartScreenshotPickerEnabled && smartScreenshotPickerEnabled.checked
         ),
+        clipboard_screenshot_cap: readClipboardScreenshotCap(),
         anthropic_key: null,
       });
       if (!res || !res.ok) {

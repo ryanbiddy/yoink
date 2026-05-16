@@ -28,6 +28,7 @@ Returns public settings only. It never returns the Anthropic API key.
     "comment_intelligence_enabled": true,
     "hook_type_enabled": false,
     "smart_screenshot_picker_enabled": false,
+    "clipboard_screenshot_cap": 4,
     "anthropic_key_set": true
   }
 }
@@ -42,6 +43,7 @@ Request body:
   "comment_intelligence_enabled": true,
   "hook_type_enabled": false,
   "smart_screenshot_picker_enabled": false,
+  "clipboard_screenshot_cap": 4,
   "anthropic_key": "sk-ant-..."
 }
 ```
@@ -49,6 +51,7 @@ Request body:
 Field rules:
 
 - `comment_intelligence_enabled`, `hook_type_enabled`, and `smart_screenshot_picker_enabled` are optional booleans. Fields omitted from a POST keep their existing value.
+- `clipboard_screenshot_cap` is optional integer configuration for single-video clipboard screenshots. Valid range: `0-12`; default: `4`. It does not affect screenshots saved on disk.
 - `anthropic_key` is optional. If omitted, the existing saved key is preserved.
 - `anthropic_key` as a non-empty string replaces the saved key.
 - `anthropic_key` as `null` or an empty string clears the saved key.
@@ -64,6 +67,7 @@ Response body matches `GET /settings`:
     "comment_intelligence_enabled": true,
     "hook_type_enabled": false,
     "smart_screenshot_picker_enabled": false,
+    "clipboard_screenshot_cap": 4,
     "anthropic_key_set": true
   }
 }
@@ -96,6 +100,7 @@ Success:
     "comment_intelligence_enabled": true,
     "hook_type_enabled": false,
     "smart_screenshot_picker_enabled": false,
+    "clipboard_screenshot_cap": 4,
     "anthropic_key_set": true
   }
 }
@@ -112,6 +117,7 @@ Failed validation:
     "comment_intelligence_enabled": true,
     "hook_type_enabled": false,
     "smart_screenshot_picker_enabled": false,
+    "clipboard_screenshot_cap": 4,
     "anthropic_key_set": false
   }
 }

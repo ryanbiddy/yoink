@@ -99,7 +99,7 @@ Protocol validation failures return `4xx` JSON errors. Handled application failu
 - The path must be absolute.
 - Raw and resolved paths containing a `..` segment are rejected.
 - Symlinks are resolved before sandbox checks.
-- The resolved file must be under the Yoink output root (`Desktop\Yoink` via Windows known-folder resolution).
+- The resolved file must be under the Yoink output root (`Desktop\Yoink` via Windows known-folder resolution by default, or `YOINK_OUTPUT_DIR` when explicitly set in dev/support mode).
 - The path must exist and be a regular file.
 - Files larger than 10 MB are rejected.
 - Only `.png`, `.jpg`, `.jpeg`, and `.webp` are served.

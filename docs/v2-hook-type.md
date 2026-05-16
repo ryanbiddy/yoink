@@ -17,6 +17,7 @@ Hook Type is an optional BYO Anthropic-key feature that classifies a video's ope
     "comment_intelligence_enabled": true,
     "hook_type_enabled": true,
     "smart_screenshot_picker_enabled": false,
+    "clipboard_screenshot_cap": 4,
     "anthropic_key_set": true
   }
 }
@@ -27,7 +28,8 @@ Hook Type is an optional BYO Anthropic-key feature that classifies a video's ope
 ```json
 {
   "hook_type_enabled": true,
-  "smart_screenshot_picker_enabled": false
+  "smart_screenshot_picker_enabled": false,
+  "clipboard_screenshot_cap": 4
 }
 ```
 
@@ -35,6 +37,7 @@ Field rules:
 
 - `hook_type_enabled` defaults to `false`.
 - `smart_screenshot_picker_enabled` defaults to `false`.
+- `clipboard_screenshot_cap` defaults to `4`, accepts `0-12`, and controls single-video clipboard screenshot embedding only.
 - Hook Type uses the existing Anthropic API key stored in the OS keyring.
 - The key is never returned by `GET /settings`.
 
