@@ -108,10 +108,10 @@ Use this as the one pre-launch checklist. Run on a clean Windows user profile if
 ## 10. Pre-launch packaging gates
 
 77. [ ] `USE_MOCK_API` / mock mode is off for production extension - success: popup talks to real helper, not fixtures.
-78. [ ] `INSTALLER_PUBLISHED` is flipped only after GitHub release asset exists - success: setup download URL resolves to `Yoink-Setup-1.0.0.exe`.
+78. [ ] `INSTALLER_PUBLISHED` is flipped only after GitHub release asset exists - success: setup download URL resolves to `Yoink-Setup-2.0.0.exe`.
 79. [ ] Manifest version and installer version are aligned - success: Chrome Web Store package, installer, and `server.py VERSION` match launch plan.
 80. [ ] Direct-download hashes are locked - success: Python, ffmpeg, and get-pip hashes in `build.ps1` are non-empty and verified during build.
-81. [ ] Build installer from clean cache - success: `.\build.ps1 -Clean` outputs `build\Yoink-Setup-1.0.0.exe` and hash checks pass.
+81. [ ] Build installer from clean cache - success: `.\build.ps1 -Clean` outputs `build\Yoink-Setup-2.0.0.exe` and hash checks pass.
 82. [ ] Clean Windows VM install - success: unsigned SmartScreen path is understandable, installer runs without admin, helper starts hidden.
 83. [ ] Chrome Web Store package uses production domain/copy - success: footer, setup, README, store listing, and landing links point at `ryanbiddy.com/yoink` or the chosen canonical URL.
 84. [ ] Final docs pass - success: README, security, build-installer, v2 docs, and store listing no longer describe pre-Sprint-7 behavior.

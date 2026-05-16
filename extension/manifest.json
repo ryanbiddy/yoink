@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Yoink",
   "short_name": "Yoink",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Yoink any YouTube video into Claude or ChatGPT — full transcript, screenshots, and metadata in one structured doc.",
   "permissions": ["clipboardWrite", "notifications", "storage", "contextMenus", "activeTab", "offscreen"],
   "host_permissions": [

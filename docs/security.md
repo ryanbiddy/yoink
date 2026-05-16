@@ -47,7 +47,7 @@ All other helper endpoints require `X-Yoink-Token`:
 - Playlist jobs: `POST /playlist/preview`, `POST /playlist/start`, `GET /jobs`, `GET /jobs/<id>`, `POST /jobs/<id>/cancel`
 - Sessions: `POST /session/start`, `POST /session/add`, `POST /session/close`, `POST /session/cancel`, `POST /session/open`, `GET /session/list`, `GET /session/active`
 - Settings, AI key testing, and local cost estimates: `GET /settings`, `GET /settings/pricing`, `POST /settings`, `POST /settings/test-key`
-- Local files, folders, and hook taxonomy: `GET /file`, `GET /taxonomy`, `GET /recent`, `GET /open-folder`, `GET /open-index`, `GET /open-prompts`
+- Local files, folders, Skill prompt, and hook taxonomy: `GET /file`, `GET /skill/system-prompt`, `GET /taxonomy`, `GET /recent`, `GET /open-folder`, `GET /open-index`, `GET /open-prompts`
 - MCP HTTP JSON-RPC helper: `GET /mcp/v1/config`, `GET /mcp/v1/sse`, `POST /mcp/v1`, `POST /mcp/v1/initialize`, `POST /mcp/v1/tools/list`, `POST /mcp/v1/tools/call`
 
 The token is accepted only in the `X-Yoink-Token` header. Query-string token auth is intentionally unsupported so tokens do not leak into browser history, server logs, or HTTP debug tools that capture URLs.

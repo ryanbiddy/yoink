@@ -9,7 +9,7 @@
 #        python\   embeddable Python with site-packages enabled and
 #                  yt-dlp installed via pip
 #        bin\      ffmpeg.exe (and ffprobe.exe if present)
-#        server.py, yt_extract.py, topics.json, stop-server.{bat,ps1},
+#        server.py, yt_extract.py, topics.json, skills\, stop-server.{bat,ps1},
 #        yoink.ico
 #   3. Run ISCC.exe against installer\yoink.iss to produce
 #      build\Yoink-Setup-<version>.exe
@@ -36,10 +36,10 @@ $StagingDir   = Join-Path $InstallerDir 'staging'
 $TemplatesDir = Join-Path $InstallerDir 'templates'
 $IconSrc      = Join-Path $InstallerDir 'yoink.ico'
 
-# ---- Versions (pinned for v1 ship) --------------------------------------
-$VERSION        = '1.0.0'
+# ---- Versions (pinned for v2 ship) --------------------------------------
+$VERSION        = '2.0.0'
 # Python 3.11.9 is the last 3.11.x with binary installers; later 3.11 are
-# source-only security releases. v1 accepts this; v1.5 plan: move to 3.12.
+# source-only security releases. v2 accepts this; v2.1 plan: move to 3.12.
 $PYTHON_VERSION = '3.11.9'
 $PYTHON_URL     = "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-embed-amd64.zip"
 $GETPIP_URL     = 'https://bootstrap.pypa.io/get-pip.py'
@@ -137,6 +137,9 @@ foreach ($f in @('server.py','yt_extract.py','topics.json')) {
         throw "Missing $f at repo root"
     }
 }
+if (-not (Test-Path (Join-Path $RepoRoot 'skills\yoink\SKILL.md'))) {
+    throw "Missing skills\yoink\SKILL.md at repo root"
+}
 
 # ---- 1. Download dependencies ------------------------------------------
 Write-Step 'Fetching dependencies'
@@ -178,7 +181,7 @@ $embedPython = "$StagingDir\python\python.exe"
 if ($LASTEXITCODE -ne 0) { throw 'pip bootstrap failed' }
 
 # 2d. Install yt-dlp + Pillow + MCP + keyring at pinned versions. Pip's hash-locking would
-#     require a requirements file with --require-hashes; for v1 we accept
+#     require a requirements file with --require-hashes; for v2 we accept
 #     the trust-pip-itself model since the version pins are the
 #     load-bearing part (a compromised release on PyPI affects everyone,
 #     not just us). Pillow drives the multimodal paste-corpus generator
@@ -238,6 +241,7 @@ Copy-Item (Join-Path $RepoRoot 'topics.json')    $StagingDir -Force
 Copy-Item (Join-Path $TemplatesDir 'stop-server.bat') $StagingDir -Force
 Copy-Item (Join-Path $TemplatesDir 'stop-server.ps1') $StagingDir -Force
 Copy-Item $IconSrc (Join-Path $StagingDir 'yoink.ico') -Force
+Copy-Item (Join-Path $RepoRoot 'skills') (Join-Path $StagingDir 'skills') -Recurse -Force
 
 # ---- 3. Compile installer ----------------------------------------------
 Write-Step 'Compiling installer'

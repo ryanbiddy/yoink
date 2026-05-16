@@ -27,13 +27,16 @@ Click the **Yoink** button under any YouTube video and you get a single, structu
 
 Paste it into Claude or ChatGPT. Ask "Decode the hook," "Outline the structure," "What would make this 2x better." Yoink ships with a built-in 11-prompt starter library.
 
-### Two ways to use Yoink
+### Three ways to use Yoink
 
 **As a Chrome extension (the one-click flow):**
 One click on the in-page button, your clipboard fills with a structured corpus, the chat opens. Paste, prompt, analyze.
 
 **As an MCP server (the agent flow):**
 Yoink ships a local MCP server with 10 tools your AI agent can call directly: `yoink_video`, `yoink_playlist`, `list_recent_yoinks`, `search_yoinks`, `analyze_comments`, `classify_hook`, `get_taxonomy`, and more. Tell Claude "yoink that video and decode the hook" — it does both. No clipboard step. Officially tested with Claude Desktop and Cursor; community-reported support for ChatGPT Desktop, Continue, and Cline.
+
+**As an operator Skill (Claude Code, OpenClaw, Hermes, Cursor, and more):**
+Yoink includes a portable `SKILL.md` using the agentskills.io open standard. Drop it into your agent client to add citation discipline, operator-grade YouTube analysis, hook-autopsy tweet mode, and the Yoink Hook Type taxonomy on top of the MCP tools.
 
 ### Why people use Yoink
 

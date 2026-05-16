@@ -11,6 +11,9 @@ installer/staging/
 *.zip
 video.*
 Yoink/
+!skills/
+!skills/yoink/
+!skills/yoink/**
 
 # User-facing yoink output. In dev mode the server's Desktop resolves to
 # the user's actual Desktop -- and on this machine the OneDrive Desktop

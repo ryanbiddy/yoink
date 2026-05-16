@@ -7,7 +7,7 @@
 .\build.ps1
 ```
 
-The script downloads dependencies on first run (~80 MB cached under `build\cache\`), stages the install layout, and compiles `build\Yoink-Setup-1.0.0.exe`.
+The script downloads dependencies on first run (~80 MB cached under `build\cache\`), stages the install layout, and compiles `build\Yoink-Setup-2.0.0.exe`.
 
 To wipe everything and rebuild from scratch:
 
@@ -26,7 +26,7 @@ You do *not* need a system Python installed; the build downloads and uses an emb
 
 ## Architecture: why Python embeddable + Inno Setup
 
-The spec offered two options. We picked **Option B (Python embeddable + Inno Setup)** for the v1 ship.
+The spec offered two options. We picked **Option B (Python embeddable + Inno Setup)** for the v2 ship.
 
 | Concern | Option A (PyInstaller) | Option B (embeddable) |
 |---|---|---|
@@ -37,7 +37,7 @@ The spec offered two options. We picked **Option B (Python embeddable + Inno Set
 | Startup time | Slightly faster (already-frozen) | Negligible difference for our HTTP server |
 | Update mechanism | Replace `.exe` | Replace `.py` files |
 
-The deciding factor is AV reliability. v1 ships unsigned (we can't justify a code-signing certificate before launch validates the product), so anything that flags antivirus is a death sentence for the activation funnel — the user we just walked through `setup.html` is exactly the user who'll abandon if SmartScreen blocks the install. PyInstaller bootloaders trigger heuristic flags often enough that we'd be debugging false positives instead of bugs.
+The deciding factor is AV reliability. v2 ships unsigned (we can't justify a code-signing certificate before launch validates the product), so anything that flags antivirus is a death sentence for the activation funnel — the user we just walked through `setup.html` is exactly the user who'll abandon if SmartScreen blocks the install. PyInstaller bootloaders trigger heuristic flags often enough that we'd be debugging false positives instead of bugs.
 
 The 120 MB install footprint is acceptable; the extension already implies users are doing meaningful work with YouTube videos and they have disk.
 
@@ -56,6 +56,7 @@ yt_extract.py     Imported by server.py (parse_srt, slugify, fmt_time)
 topics.json       Topic-folder routing rules
 stop-server.bat   Reads server.pid and kills the helper
 stop-server.ps1   PowerShell variant + defensive command-line sweep
+skills\yoink\     Yoink Operator Skill, plugin manifest, and system prompt
 yoink.ico         Used for shortcuts and the uninstaller chrome
 unins000.exe      Inno Setup writes this; runs the uninstaller
 ```
@@ -77,11 +78,11 @@ The helper runs under `pythonw.exe`, so there's no console window. `server.py` w
 
 All three are cached under `build\cache\` after the first download. Delete the cache or pass `-Clean` to force a refresh.
 
-## v1 release notes
+## v2 release notes
 
 | Component | Version | SHA256 | Notes |
 |---|---|---|---|
-| Python embeddable | 3.11.9 (amd64) | Locked in `build.ps1` | Acceptance: 3.11.9 is the last 3.11.x with binary installers from python.org. Later 3.11.x are source-only security releases that we'd have to build ourselves. v1 ships 3.11.9 knowing the gap; v1.5 plan: move to the latest 3.12 embeddable. |
+| Python embeddable | 3.11.9 (amd64) | Locked in `build.ps1` | Acceptance: 3.11.9 is the last 3.11.x with binary installers from python.org. Later 3.11.x are source-only security releases that we'd have to build ourselves. v2 ships 3.11.9 knowing the gap; v2.1 plan: move to the latest 3.12 embeddable. |
 | ffmpeg | 7.1 essentials build | Locked in `build.ps1` | Pulled from `github.com/GyanD/codexffmpeg/releases` (gyan.dev's GitHub mirror) for stable URLs. |
 | yt-dlp | 2026.03.17 | (pip) | Pinned via `pip install yt-dlp==2026.03.17`. Bump after compatibility-testing a new release. |
 | Pillow | 10.4.0 | (pip) | Drives the multimodal paste-corpus generator (resize + JPEG-recompress + base64-encode screenshots for clipboard embedding). Pinned via `pip install Pillow==10.4.0`. |
@@ -115,7 +116,7 @@ Pip-installed packages (`yt-dlp`, `Pillow`, `mcp`, `keyring`) are version-pinned
 | MCP Python SDK | Update `$MCP_VERSION` in `build.ps1` and the matching `mcp==...` pin in `requirements.txt`. |
 | keyring | Update `$KEYRING_VERSION` in `build.ps1` and the matching `keyring==...` pin in `requirements.txt`. |
 | ffmpeg | gyan.dev rolls the static "release essentials" build forward; the URL stays the same. To pin, swap to a versioned URL from the same site. |
-| Yoink itself | Update `$VERSION` in `build.ps1`, `AppVersion` in `installer\yoink.iss`, and `VERSION` in `server.py`. The output filename and the registry/Start Menu names will follow. |
+| Yoink itself | Update `$VERSION` in `build.ps1`, `AppVersion` in `installer\yoink.iss`, `VERSION` in `server.py`, and `version` in `extension\manifest.json`. The output filename and the registry/Start Menu names will follow. |
 
 ## How `server.py` finds bundled binaries
 
@@ -149,9 +150,9 @@ If the env var is missing, points at a non-existent path, or is not writable, Yo
 
 ### Antivirus warnings on unsigned builds
 
-`Yoink-Setup-1.0.0.exe` is unsigned. SmartScreen will show "Windows protected your PC" the first time a user runs it, and some AV products may quarantine it. There are three mitigations, in order of cost:
+`Yoink-Setup-2.0.0.exe` is unsigned. SmartScreen will show "Windows protected your PC" the first time a user runs it, and some AV products may quarantine it. There are three mitigations, in order of cost:
 
-1. **None** — accept the SmartScreen click-through ("More info" → "Run anyway"). Document it on `setup.html` so users know what to expect. Acceptable for v1 if launch volume is small.
+1. **None** — accept the SmartScreen click-through ("More info" → "Run anyway"). Document it on `setup.html` so users know what to expect. Acceptable for v2 if launch volume is small.
 2. **Code signing** — buy an OV cert (~$70/yr from one of the few remaining issuers) and sign the installer + `pythonw.exe` with `signtool.exe`. Removes most AV friction but doesn't fully clear SmartScreen until reputation builds.
 3. **EV cert** — clears SmartScreen instantly but requires a hardware token and ~$300/yr.
 
@@ -175,15 +176,15 @@ Tracked as a v1.1 task: store user-overridden prompts in `chrome.storage.local` 
 
 Before flipping the extension's download button live:
 
-1. **Build a release artifact:** `.\build.ps1` → produces `build\Yoink-Setup-1.0.0.exe`.
+1. **Build a release artifact:** `.\build.ps1` → produces `build\Yoink-Setup-2.0.0.exe`.
 2. **Smoke-test on a clean Windows VM** (see Testing matrix below).
-3. **Tag the release in git:** `git tag v1.0.0 && git push --tags`.
+3. **Tag the release in git:** `git tag v2.0.0 && git push --tags`.
 4. **Publish to GitHub releases:**
    - Create a new release at `https://github.com/ryanbiddy/yoink/releases/new`.
-   - Tag: `v1.0.0`. Title: `Yoink 1.0.0`.
-   - Attach `build\Yoink-Setup-1.0.0.exe` as the release asset.
+   - Tag: `v2.0.0`. Title: `Yoink 2.0.0`.
+   - Attach `build\Yoink-Setup-2.0.0.exe` as the release asset.
    - Publish (not draft).
-   - Verify `https://github.com/ryanbiddy/yoink/releases/latest/download/Yoink-Setup-1.0.0.exe` resolves to the file.
+   - Verify `https://github.com/ryanbiddy/yoink/releases/latest/download/Yoink-Setup-2.0.0.exe` resolves to the file.
 5. **Flip the extension's `INSTALLER_PUBLISHED` flag:**
    - Edit `extension/setup.js` and set `const INSTALLER_PUBLISHED = true;`.
    - Reload the extension and visit `setup.html` -- the **Download Yoink Setup for Windows** button should now be active and link to the latest release.
@@ -196,7 +197,7 @@ The flag exists so the extension can ship to early users *before* the installer 
 
 After `build.ps1` finishes, smoke-test by:
 
-1. **Fresh install** — run `Yoink-Setup-1.0.0.exe` on a Windows VM that doesn't have Yoink. Confirm:
+1. **Fresh install** — run `Yoink-Setup-2.0.0.exe` on a Windows VM that doesn't have Yoink. Confirm:
    - Default install path is `%LOCALAPPDATA%\Yoink`.
    - "Launch Yoink Server now" is checked by default on the finish page.
    - After finish, `Get-Process pythonw` shows a process whose path is inside the install dir.

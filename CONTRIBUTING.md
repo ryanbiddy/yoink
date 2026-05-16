@@ -26,7 +26,7 @@ Real yoinks contain real video transcripts and comments, which can include perso
 
 ## Building the installer
 
-See `docs/build-installer.md` for the full build pipeline. Short version: `./build.ps1` from a clean checkout produces `build/Yoink-Setup-1.0.0.exe`.
+See `docs/build-installer.md` for the full build pipeline. Short version: `./build.ps1` from a clean checkout produces `build/Yoink-Setup-2.0.0.exe`.
 
 ## Security
 

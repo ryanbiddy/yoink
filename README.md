@@ -11,12 +11,17 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 
 ## What's new in v2
 
-v2 ships two adoption paths for two audiences:
+v2 ships three adoption paths:
 
 - **Chrome extension** (the creator path): one-click yoinks, plus Playlist Mode (up to 10 videos per job), AI-powered Hook Type classification, Comment Intelligence, and Smart Screenshot Picker.
 - **MCP server** (the agent path): 10 tools your AI can call directly. Officially tested with Claude Desktop and Cursor; works with most MCP-compatible clients.
+- **Operator Skill**: drop-in `SKILL.md` that turns Claude / OpenClaw / Hermes / Cursor / etc into a YouTube research analyst. Works across 8+ clients via the agentskills.io open standard.
 
 AI-powered features are opt-in and BYO Anthropic API key (stored securely in Windows Credential Manager). The core extraction flow remains fully local — nothing leaves your machine except the YouTube fetch.
+
+## Yoink Operator Skill
+
+Yoink v2 bundles a portable Skill at `skills/yoink/SKILL.md` and installs it to `%LOCALAPPDATA%\Yoink\skills\yoink\`. It gives MCP-capable agents the operating frame for Yoink corpora: timestamp citation discipline, decode-don't-dunk analysis, hook-autopsy tweet mode, and the Yoink Hook Type taxonomy. Open the [setup page's Skill section](extension/setup.html#skill-settings) for client install commands and a copyable fallback system prompt.
 
 ## Features
 
@@ -58,7 +63,7 @@ AI-powered features are opt-in and BYO Anthropic API key (stored securely in Win
 2. **Run it.** Defaults install to `%LOCALAPPDATA%\Yoink\` (no admin required). The "Launch Yoink Server now" checkbox on the finish page starts the helper immediately, and an autostart entry runs it on every Windows login.
 3. **Install the extension** from the Chrome Web Store. The first time you launch the popup it'll detect the helper and the indicator will go green within a couple of seconds.
 
-**For MCP users:** open the Yoink setup page after install (Start Menu → Yoink → Yoink folder → click `setup.html`, or click the popup's Settings link). Copy the stdio config snippet, paste into Claude Desktop's MCP config, restart Claude. Yoink tools appear automatically.
+**For MCP users:** open the Yoink setup page from the extension popup's Settings link. Copy the stdio config snippet, paste into Claude Desktop's MCP config, restart Claude. Yoink tools appear automatically.
 
 If the popup indicator stays orange, open the Start Menu, search "Yoink", and click **Yoink Server**. Stop it the same way via **Stop Yoink Server**. Uninstall removes everything including the autostart entry.
 

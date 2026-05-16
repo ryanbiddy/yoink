@@ -1,0 +1,13 @@
+{
+  "name": "yoink-operator",
+  "displayName": "Yoink Operator",
+  "description": "Turn Claude into a YouTube research analyst when working with Yoink corpora. Enforces citation discipline, operator-grade depth, decode-don't-dunk tone, and the Yoink Hook Type taxonomy.",
+  "version": "1.0.0",
+  "author": "Ryan Biddy",
+  "license": "MIT",
+  "homepage": "https://github.com/ryanbiddy/yoink",
+  "repository": "https://github.com/ryanbiddy/yoink",
+  "skills": [
+    { "name": "yoink", "path": "SKILL.md" }
+  ]
+}

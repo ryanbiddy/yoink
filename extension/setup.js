@@ -19,15 +19,15 @@ const SUGGESTED_VIDEO = {
   byline: "Lenny's Podcast",
 };
 
-// LAUNCH GATE -- flip to `true` only after Yoink-Setup-1.0.0.exe is live
+// LAUNCH GATE -- flip to `true` only after Yoink-Setup-2.0.0.exe is live
 // at github.com/ryanbiddy/yoink/releases/latest. Procedure (also in
 // docs/build-installer.md, "Launch checklist"):
 //   1. Confirm SHA256 hashes in build.ps1 match the component versions.
-//   2. Run .\build.ps1 -- builds Yoink-Setup-1.0.0.exe.
+//   2. Run .\build.ps1 -- builds Yoink-Setup-2.0.0.exe.
 //   3. Smoke-test on a clean Windows VM.
-//   4. git tag v1.0.0 && git push --tags.
+//   4. git tag v2.0.0 && git push --tags.
 //   5. Create the GitHub release, attach the .exe.
-//   6. Verify https://github.com/ryanbiddy/yoink/releases/latest/download/Yoink-Setup-1.0.0.exe
+//   6. Verify https://github.com/ryanbiddy/yoink/releases/latest/download/Yoink-Setup-2.0.0.exe
 //      resolves to the file.
 //   7. Flip this flag to `true` and commit.
 //   8. Republish the extension to the Chrome Web Store.
@@ -47,7 +47,9 @@ const AUTO_YOINK_TTL_MS = 60_000;
 const params = new URLSearchParams(location.search);
 const source = params.get("source") || "install";
 const requestedHash = location.hash || "";
-const isSettingsMode = source === "popup" || requestedHash === "#mcp-settings";
+const isSettingsMode = source === "popup"
+  || requestedHash === "#mcp-settings"
+  || requestedHash === "#skill-settings";
 
 const step1 = document.getElementById("step-1");
 const step2 = document.getElementById("step-2");
@@ -89,6 +91,8 @@ const mcpConfigEls = {
   generic: document.getElementById("mcp-config-generic"),
 };
 const mcpCopyButtons = Array.from(document.querySelectorAll("[data-copy-client]"));
+const skillSystemPrompt = document.getElementById("skill-system-prompt");
+const skillPromptCopyBtn = document.getElementById("skill-prompt-copy");
 
 // ---- Suggested-video population -----------------------------------------
 function videoIdFromUrl(url) {
@@ -247,6 +251,7 @@ function onServerUp() {
   loadAIPricing();
   loadCISettings();
   loadMCPConfig();
+  loadSkillSystemPrompt();
   markDone(step3);
   if (isSettingsMode) return;
   if (step4.classList.contains("hidden")) {
@@ -614,6 +619,49 @@ for (const btn of mcpCopyButtons) {
       const old = btn.textContent;
       btn.textContent = "Copy failed";
       setTimeout(() => { btn.textContent = old; }, 1200);
+    }
+  });
+}
+
+// ---- Yoink Operator Skill fallback prompt --------------------------------
+async function fetchSkillPromptWithToken(token) {
+  return fetch(`${SERVER}/skill/system-prompt`, {
+    method: "GET",
+    mode: "cors",
+    cache: "no-store",
+    headers: token ? { "X-Yoink-Token": token } : {},
+  });
+}
+
+async function loadSkillSystemPrompt() {
+  if (!skillSystemPrompt || !window.STC || !STC.getToken) return;
+  try {
+    let token = await STC.getToken();
+    let res = await fetchSkillPromptWithToken(token);
+    if (res.status === 403) {
+      token = await STC.getToken({ refresh: true });
+      res = await fetchSkillPromptWithToken(token);
+    }
+    if (!res.ok) throw new Error("skill prompt unavailable");
+    skillSystemPrompt.value = await res.text();
+  } catch {
+    skillSystemPrompt.value = "System prompt unavailable. Make sure Yoink Server is running.";
+  }
+}
+
+if (skillPromptCopyBtn) {
+  skillPromptCopyBtn.addEventListener("click", async () => {
+    const text = skillSystemPrompt ? skillSystemPrompt.value : "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const old = skillPromptCopyBtn.textContent;
+      skillPromptCopyBtn.textContent = "Copied";
+      setTimeout(() => { skillPromptCopyBtn.textContent = old; }, 1200);
+    } catch {
+      const old = skillPromptCopyBtn.textContent;
+      skillPromptCopyBtn.textContent = "Copy failed";
+      setTimeout(() => { skillPromptCopyBtn.textContent = old; }, 1200);
     }
   });
 }

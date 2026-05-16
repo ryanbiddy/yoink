@@ -6,11 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2.0.0] — TBD (launch pending)
 
-The "YouTube layer for any AI agent" release. Two adoption funnels: Chrome extension for creators, MCP server for developers and agents.
+The "YouTube layer for any AI agent" release. Three adoption funnels: Chrome extension for creators, MCP server for developers and agents, and the Yoink Operator Skill for clients that support portable skills or system prompts.
 
 ### Added
 
-- **MCP server** with 9 tools (`yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`). Stdio transport officially tested with Claude Desktop and Cursor. Local HTTP JSON-RPC transport available, marked experimental.
+- **MCP server** with 10 tools (`yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`, `get_taxonomy`). Stdio transport officially tested with Claude Desktop and Cursor. Local HTTP JSON-RPC transport available, marked experimental.
+- **Yoink Operator Skill** - drop-in `SKILL.md` (agentskills.io open standard) covering identity, default chat, hook-autopsy tweet mode, and citation discipline. Distributed via Claude Code plugin, OpenClaw ClawHub, Hermes URL install, and copyable system prompt for everywhere else.
 - **Playlist Mode.** Paste a YouTube playlist URL, yoink up to 10 videos per job. Async job system with live progress, cancellation, and partial-failure tolerance. Combined corpus (text-only) to clipboard; per-video corpora with screenshots on disk.
 - **Comment Intelligence.** Optional Anthropic-powered analysis of comment threads. Three structured sections appended per video: top themes, mentioned products/tools, notable disagreements.
 - **Hook Type classification.** Optional Anthropic-powered classification of each video's opening style across 9 categories: curiosity gap, question, contrarian, story open, promise/list, demo, authority, stakes, other.

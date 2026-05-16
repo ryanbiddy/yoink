@@ -743,6 +743,32 @@ Error responses:
 | 400 | `limit invalid` | `limit` cannot be parsed as an integer. |
 | 403 | `missing or invalid token` | `X-Yoink-Token` missing or stale. |
 
+### GET /skill/system-prompt
+
+Return the copyable Yoink Operator Skill fallback prompt for setup.html. This is for AI clients that do not load `SKILL.md` natively.
+
+Auth: `X-Yoink-Token` required.
+
+Request body: none.
+
+Success response: HTTP 200
+
+Headers:
+
+```http
+Content-Type: text/markdown; charset=utf-8
+Cache-Control: private, max-age=300
+```
+
+Body: raw markdown text from `%LOCALAPPDATA%\Yoink\skills\yoink\system-prompt.md` in installed builds, or `skills\yoink\system-prompt.md` in dev mode.
+
+Error responses:
+
+| HTTP status | Error string | Meaning |
+|---:|---|---|
+| 403 | `missing or invalid token` | `X-Yoink-Token` missing or stale. |
+| 404 | `skill system prompt not found` | Skill files are missing from the install layout. |
+
 ### MCP HTTP JSON-RPC helper endpoints
 
 Yoink v2 Sprint 4 adds MCP over stdio plus an experimental local HTTP JSON-RPC helper. Stdio clients launch `yoink_mcp.py` and are the officially supported MCP transport for launch. HTTP clients can use the existing helper server under `/mcp/v1` for direct JSON-RPC POST calls, but this is not a spec-complete SSE or Streamable HTTP implementation.
@@ -1126,6 +1152,7 @@ Claude Code owns `extension/lib/extract.js`. Backend contracts now need these cl
 - `getScreenshotThumbnail(path)` wraps authenticated `GET /file?path=<absolute-path>`, validates the response is an image, and returns a blob URL for use in `<img src>`.
 - `getSettings`, `updateSettings`, and `testAnthropicKey` already exist. Confirm their settings shape includes `hook_type_enabled`, `smart_screenshot_picker_enabled`, and `clipboard_screenshot_cap` alongside `comment_intelligence_enabled` and `anthropic_key_set`.
 - Sprint 4 MCP needs no new `extract.js` helpers. setup.html uses existing `STC.getToken()` plus authenticated fetch to `GET /mcp/v1/config`.
+- Sprint 12 Skill install needs no new `extract.js` helpers. setup.html uses existing `STC.getToken()` plus authenticated fetch to `GET /skill/system-prompt`.
 
 ## Error model
 

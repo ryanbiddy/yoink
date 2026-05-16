@@ -447,6 +447,11 @@
       max-height: 260px;
       overflow: auto;
     }
+    textarea.mcp-config {
+      width: 100%;
+      min-height: 220px;
+      resize: vertical;
+    }
 
     .footer {
       margin-top: 36px;
@@ -506,7 +511,7 @@
       <div class="installer-mock" aria-hidden="true">
         <div class="icon">Y</div>
         <div>
-          <div class="filename">Yoink-Setup-1.0.0.exe</div>
+          <div class="filename">Yoink-Setup-2.0.0.exe</div>
           <div class="caption">Double-click to install. Takes about 30 seconds.</div>
         </div>
       </div>
@@ -703,6 +708,45 @@
             <button class="button ghost mcp-copy" type="button" data-copy-client="generic">Copy config</button>
           </div>
           <pre id="mcp-config-generic" class="mcp-config">Start Yoink to generate this config.</pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="skill-settings" class="step">
+      <div class="step-head">
+        <div class="step-num"><span class="step-num-text">Skill</span></div>
+        <h2>Yoink Operator Skill (recommended for Claude users)</h2>
+      </div>
+      <p>The Skill turns your AI client into a YouTube creator research analyst when it works with Yoink corpora. It adds citation discipline, operator-grade analysis, tweet-mode hook autopsies, and the Yoink Hook Type taxonomy.</p>
+      <p class="sub">Use the one-liner for clients that support skills natively. For everything else, copy the system prompt below.</p>
+
+      <div class="mcp-grid">
+        <div class="mcp-card">
+          <div class="mcp-card-title">Claude Code</div>
+          <div class="mcp-path">claude plugin install github.com/ryanbiddy/yoink</div>
+        </div>
+
+        <div class="mcp-card">
+          <div class="mcp-card-title">OpenClaw (after ClawHub publication)</div>
+          <div class="mcp-path">openclaw skills install ryanbiddy/yoink</div>
+        </div>
+
+        <div class="mcp-card">
+          <div class="mcp-card-title">Hermes Agent</div>
+          <div class="mcp-path">hermes skills install https://raw.githubusercontent.com/ryanbiddy/yoink/main/skills/yoink/SKILL.md</div>
+        </div>
+
+        <div class="mcp-card">
+          <div class="mcp-card-title">Cursor / Codex CLI / Gemini CLI / Windsurf</div>
+          <p class="sub">Manual drop: copy SKILL.md from your install at <code>%LOCALAPPDATA%\Yoink\skills\yoink\SKILL.md</code> into your client's skills directory.</p>
+        </div>
+
+        <div class="mcp-card">
+          <div class="mcp-card-head">
+            <div class="mcp-card-title">Any other client</div>
+            <button id="skill-prompt-copy" class="button ghost mcp-copy" type="button">Copy system prompt</button>
+          </div>
+          <textarea id="skill-system-prompt" class="mcp-config" readonly>Start Yoink to load the system prompt.</textarea>
         </div>
       </div>
     </section>

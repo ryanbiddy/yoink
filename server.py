@@ -56,7 +56,7 @@ from yt_extract import parse_srt, slugify, fmt_time  # noqa: E402
 # --- Constants -------------------------------------------------------------
 HOST = "127.0.0.1"
 PORT = 5179
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 ALLOWED_ORIGINS = {
     "https://www.youtube.com",
     "https://m.youtube.com",
@@ -3780,6 +3780,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(200, _mcp_config_payload())
         if bare == "/mcp/v1/sse":
             return self._handle_mcp_sse()
+        if bare == "/skill/system-prompt":
+            return self._handle_skill_system_prompt()
         if bare == "/open-prompts":
             return self._handle_open_prompts()
         if bare == "/open-index":
@@ -4116,6 +4118,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(200, {"ok": False, "error": str(e)})
         log.info("GET /open-prompts -> %s", prompts_path)
         self._send_json(200, {"ok": True, "path": str(prompts_path)})
+
+    # ---- /skill/system-prompt ----
+    # setup.html uses this to offer a copyable fallback prompt for clients
+    # that do not load SKILL.md natively. Token-gated because it reveals the
+    # local install layout and should follow the rest of setup's private API.
+    def _handle_skill_system_prompt(self):
+        prompt_path = HERE / "skills" / "yoink" / "system-prompt.md"
+        try:
+            body = prompt_path.read_text(encoding="utf-8").encode("utf-8")
+        except OSError:
+            return self._send_json(404, {
+                "ok": False,
+                "error": "skill system prompt not found",
+            })
+        self.send_response(200)
+        self.send_header("Content-Type", "text/markdown; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, max-age=300")
+        self._send_cors(self._cors_origin())
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         # Auth first so we don't even read the body for unauthenticated

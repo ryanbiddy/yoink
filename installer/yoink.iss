@@ -11,11 +11,12 @@
 ;   yoink_mcp.py    MCP stdio entry point for agent clients.
 ;   yt_extract.py   Helper module imported by server.py.
 ;   topics.json     Topic-folder routing rules.
+;   skills\yoink\   Yoink Operator Skill + copyable system prompt.
 ;   stop-server.bat Stops the server via the PID file written at startup.
 ;   yoink.ico       Used for shortcuts and the uninstaller.
 
 #define AppName       "Yoink"
-#define AppVersion    "1.0.0"
+#define AppVersion    "2.0.0"
 #define AppPublisher  "ReplayRyan"
 #define AppURL        "https://ryanbiddy.com/yoink"
 
@@ -63,6 +64,7 @@ Source: "staging\yoink_mcp_tools.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\yt_extract.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\topics.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "staging\skills\*"; DestDir: "{app}\skills"; Flags: recursesubdirs ignoreversion createallsubdirs
 Source: "staging\stop-server.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\stop-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\yoink.ico"; DestDir: "{app}"; Flags: ignoreversion
