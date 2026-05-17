@@ -1,7 +1,7 @@
 # Yoink v2 API contract
 
-Status: implemented through v2.0 Sprint 11
-Scope: Playlist Mode, settings, file serving, and MCP HTTP backend contract
+Status: implemented through v2.0 Sprint 15
+Scope: Playlist Mode, settings, file serving, MCP HTTP backend contract, and SQLite library-index endpoints
 Non-goal: UI design, Channel Decoder, Niche Corpus, or Mac installer work
 
 ## Overview
@@ -12,9 +12,9 @@ Yoink v2 adds an async job model for playlist extraction while preserving the v1
 
 All new endpoints use the same local-server auth model as v1:
 
-- `/health` and `/ping` stay public and unauthenticated.
+- `/health`, `/ping`, and `/index/backfill-status` stay public and unauthenticated.
 - `/token` stays the token-issuance endpoint and requires `X-Yoink-Client: yoink-extension`.
-- All endpoints in this document require `X-Yoink-Token: <token>`.
+- All other endpoints in this document require `X-Yoink-Token: <token>`.
 - POST endpoints require `Content-Type: application/json`.
 - POST request bodies must be top-level JSON objects and remain under the existing 64 KB body limit.
 
@@ -48,6 +48,90 @@ Single-video `/extract` still writes the complete screenshot set to disk. The cl
 The setting is returned by `GET /settings` and accepted by `POST /settings`. Setting it to `0` produces a text-only clipboard corpus while keeping all screenshots on disk.
 
 ## Endpoint reference
+
+### GET /health and GET /ping
+
+Public liveness probes. `/health` and `/ping` return the same payload and intentionally do not require `X-Yoink-Token`, so the extension can detect whether the helper is running before it has a token.
+
+Auth: none.
+
+Request body: none.
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "version": "2.0.0",
+  "index_recovering": false
+}
+```
+
+Fields:
+
+| Field | Type | Notes |
+|---|---:|---|
+| `ok` | boolean | Always `true` for a healthy helper. |
+| `version` | string | Helper version from the top-level `VERSION` file. |
+| `index_recovering` | boolean | `true` while a corrupt `index.db` has been quarantined and the replacement database is being backfilled from disk. |
+
+### GET /index/backfill-status
+
+Return the current SQLite library-index backfill progress. This powers the popup's "Indexing your yoinks" banner on first boot or after index recovery.
+
+Auth: none. This endpoint is public like `/health`; it reveals only progress counts and no user corpus data.
+
+Request body: none.
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "state": "running",
+  "current": 47,
+  "total": 200
+}
+```
+
+Fields:
+
+| Field | Type | Notes |
+|---|---:|---|
+| `state` | string | `idle`, `running`, or `complete`. |
+| `current` | integer | Number of folders scanned in the current backfill run. |
+| `total` | integer | Total folders discovered for the current backfill run. |
+
+Notes:
+
+- A missing `index.db`, a newly-created database, or a recovered corrupt database can trigger a background scan.
+- The scan is idempotent and skips already-indexed `video_id`s.
+- `state: "complete"` can mean finished normally or stopped after cancellation.
+
+### POST /index/backfill-cancel
+
+Request cancellation of the current background library-index backfill scan. Already-indexed rows stay in `index.db`; future boot/backfill runs can pick up anything left unindexed.
+
+Auth: `X-Yoink-Token` required.
+
+Request body: `{}` or omitted JSON object.
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "cancelled": true
+}
+```
+
+Error responses:
+
+- HTTP 403: missing or invalid token.
+
+```json
+{ "ok": false, "error": "missing or invalid token" }
+```
 
 ### GET /settings/pricing
 
@@ -531,7 +615,7 @@ Query params:
 
 Request body: none.
 
-Persistence: jobs persist across helper restarts via `%LOCALAPPDATA%\Yoink\jobs.json` on Windows. In-flight jobs from a previous helper process are restored as records with `state: "failed"` and `error: "server restarted"`; users restart them manually. Jobs are returned sorted by `updated_at` descending. Single-video job records store a text-only corpus snapshot so `/jobs` stays small; the full multimodal clipboard payload is never persisted in `jobs.json`.
+Persistence: jobs persist across helper restarts via `%LOCALAPPDATA%\Yoink\index.db` on Windows. Legacy `%LOCALAPPDATA%\Yoink\jobs.json` is imported once on first Sprint 15 boot, then renamed to `jobs.json.migrated`. In-flight jobs from a previous helper process are restored as records with `state: "failed"` and `error: "server restarted"`; users restart them manually. Jobs are returned sorted by `updated_at` descending. Single-video job records keep only paths and small metadata so `/jobs` stays small; full corpus text and base64 clipboard payloads are never persisted in the index job row.
 
 Success response: HTTP 200
 
@@ -583,7 +667,7 @@ Success response: HTTP 200
       "error": null,
       "result": {
         "combined_md_path": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research\\a-practical-guide-to-creator-research.md",
-        "combined_md_text": "# A practical guide to creator research\n\n...",
+        "combined_md_text": "",
         "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research"
       },
       "warnings": [],
@@ -699,9 +783,37 @@ Error responses:
 | 404 | `file not found` | File is missing or not a regular file. |
 | 415 | `unsupported file type` | Extension or magic bytes are not an allowed image type. |
 
+### GET /recent
+
+Return the recent-yoinks compatibility list used by older popup surfaces. The response shape is unchanged from v1; Sprint 15's SQLite index powers newer recent/search/MCP library surfaces and the same on-disk corpus folders remain the source of truth for compatibility clients.
+
+Auth: `X-Yoink-Token` required.
+
+Request body: none.
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "recent": [
+    {
+      "title": "A practical guide to creator research",
+      "topic": "Creator Research",
+      "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research"
+    }
+  ]
+}
+```
+
+Notes:
+
+- Behavior remains intentionally compatibility-focused: clients should not depend on extra fields here.
+- Newer agent/library workflows should prefer MCP `list_recent_yoinks` or `search_yoinks`, which are backed by `index.db`.
+
 ### GET /taxonomy
 
-Return Hook Type taxonomy rows captured from successful classifications. This is the HTTP mirror of the MCP `get_taxonomy` tool and is intended as the foundation for future taxonomy viewer/export work.
+Return Hook Type taxonomy rows captured from successful classifications. This is the HTTP mirror of the MCP `get_taxonomy` tool and is intended as the foundation for future taxonomy viewer/export work. Sprint 15 stores these rows in the `taxonomy` table in `%LOCALAPPDATA%\Yoink\index.db`; legacy `taxonomy.json` is imported once and renamed to `taxonomy.json.migrated`.
 
 Auth: `X-Yoink-Token` required.
 
@@ -733,7 +845,7 @@ Success response: HTTP 200
 }
 ```
 
-Rows sort by `classified_at` descending. Corrupt or missing `taxonomy.json` yields an empty array and a server log warning rather than crashing the helper.
+Rows sort by `classified_at` descending. An empty taxonomy table returns an empty array.
 
 Error responses:
 
@@ -1093,12 +1205,12 @@ Completed single-video `result` shape:
 ```json
 {
   "combined_md_path": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research\\a-practical-guide-to-creator-research.md",
-  "combined_md_text": "# A practical guide to creator research\n\n...",
+  "combined_md_text": "",
   "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research"
 }
 ```
 
-Single-video `combined_md_text` is text-only. It is derived from the on-disk markdown corpus with local image references stripped. The full multimodal clipboard payload with base64 screenshots is intentionally not stored in `jobs.json` or returned by `/jobs`; clients that need the full saved corpus should open `combined_md_path` or call `get_yoink_corpus`.
+Single-video `combined_md_text` is intentionally empty in persisted job records. The full multimodal clipboard payload with base64 screenshots is not stored in `index.db` or returned by `/jobs`; clients that need the full saved corpus should open `combined_md_path` or call `get_yoink_corpus`.
 
 ## Combined corpus delivery
 
@@ -1144,6 +1256,8 @@ The following v1 endpoints keep their current shapes and semantics:
 - `GET /open-folder`
 
 No v2 playlist work may break existing single-video, session, health, token, recent-yoinks, or open-folder clients.
+
+Sprint 15 adds `GET /index/backfill-status` and `POST /index/backfill-cancel` without changing the existing v1 endpoint shapes.
 
 ## Client-side helpers needed from Claude Code
 
@@ -1191,6 +1305,7 @@ Handled application errors and warnings:
 ## Known limitations and resolved decisions
 
 - Per-video failures continue. The job completes if at least one video succeeds and fails only when zero selected videos succeed or the playlist itself cannot preview/start.
-- Job state persists across helper restarts via `jobs.json`. In-flight jobs are marked failed on restart; users restart them manually.
+- Job state persists across helper restarts via `index.db`. In-flight jobs are marked failed on restart; users restart them manually.
+- `jobs.json` and `taxonomy.json` are legacy migration inputs only. After successful Sprint 15 migration they are renamed with `.migrated` suffixes and the SQLite index is authoritative.
 - Comments remain background/fire-and-forget.
 - Preview `channel` and `duration_seconds` fields are nullable.
