@@ -49,6 +49,7 @@ This is the canonical list of what's shipped, what's planned, and what's been ru
 - `_corpus_update_lock` prevents CI/Hook/comments stomping each other's `.md` writes
 - `MCP yoink_video` records single-video jobs to `/jobs` (matches `/extract` flow for consistency across both adoption funnels)
 - `get_yoink_corpus` returns `video_id` and `video_url` for downstream tool composition
+- YouTube Shorts support (`/shorts/` URLs normalize correctly, UI and extraction handle them seamlessly)
 
 **v2 reliability + UX polish**
 - Job persistence across helper restarts via `%LOCALAPPDATA%\Yoink\jobs.json` (in-flight jobs marked failed on restart with `error="server restarted"`)
@@ -58,6 +59,8 @@ This is the canonical list of what's shipped, what's planned, and what's been ru
 - Polling resilience: disconnect banner after 5s, auto-open setup tab after 30s (rate-limited to once per 5 minutes across popup sessions), slow-poll cadence with auto-recovery
 - Active-playlist pill (mode-switch override; click to return to playlist view)
 - "Last yoink completed" affordance for both playlist and single-video jobs
+- Single-video failed-state affordance to surface dropped/failed single-video jobs
+- Cost estimator for AI features in setup.html based on Anthropic per-token pricing
 - 401 destructive key clearing
 - Banner-link aria-label for accessibility
 
@@ -168,16 +171,6 @@ Tier-1 small wins first (Codex's review reordering: low-risk, high-leverage). La
   Recommend (c) for v2.1; small backend addition that becomes the Hook autopsy launchpad.
 - **Trigger:** v2.1 cycle
 
-### Cost estimator for AI features
-- **Destination:** v2.1 (moved up from v2.5 per Codex's review — easier than originally scoped)
-- **Rationale:** When CI/Hook are enabled with the user's BYO key, show "≈ $0.0X estimated per video" in setup.html based on Anthropic's published per-token pricing. Trust win — users hate not knowing what BYOK is costing them. Mostly setup.html copy + a small per-token constants block; no new endpoints.
-- **Trigger:** v2.1 cycle
-
-### YouTube Shorts support audit + (if needed) fix
-- **Destination:** pre-launch v2.0 or earliest v2.1 (moved up from v2.5 per Codex's review)
-- **Rationale:** Backend normalizes `/shorts/` URLs but content-script UI placement and screenshot density haven't been confirmed. Shorts are 60-second vertical videos — different transcript density, fewer screenshots needed. Either Yoink works as-is and we document it, or there's a small content-script fix.
-- **Trigger:** Immediate — fits a Sprint 10 audit pass
-
 ### Taxonomy retention / export / query (UX surface)
 - **Destination:** v2.1 (new entry per Codex's review)
 - **Rationale:** Capture exists, but there's no endpoint, MCP tool, CSV export, or UI surface for using the captured taxonomy data. The query surface entry above covers the MCP/HTTP tool. This entry covers the UX side: setup.html taxonomy viewer, CSV export button, retention policy controls.
@@ -198,11 +191,6 @@ Tier-1 small wins first (Codex's review reordering: low-risk, high-leverage). La
 - **Rationale:** MCP server exposes tools; the Skill turns Claude into a YouTube research operator that knows how to use them. Distribution via SKILL.md packaged with the installer + Claude Code plugin manifest + copyable system prompt for non-Claude-Code clients. Decision 1 in the strategy chat: ship minimal Skill v1 (4 modes: identity + citation + default + tweet) with v2.0 launch; expanded Skill v1.2 ships modes 5-7 (thread, comments, research, compare, intel) post-launch.
 - **Trigger:** Skill v1 → v2.0 launch; Skill v1.2 → post-launch refinement with real calibration anchors
 
-### Single-video failed-state affordance
-- **Destination:** v2.1 (CC's Sprint 7 open question)
-- **Rationale:** Today the "Last yoink completed" affordance only fires for state="completed" jobs. Failed single-video jobs are silently dropped. Decide: surface them with a different prefix like "Last yoink failed: " + a "Retry" button?
-- **Trigger:** v2.1 cycle (cheap to add — one extra branch in `_isRecentCompleted`)
-
 ### MOCK_FORCE_RECOVERY_* mutual exclusion enforcement
 - **Destination:** v2.1 (CC's Sprint 7 deferred)
 - **Rationale:** Three dev fixtures (`RUNNING`, `COMPLETED`, `SINGLE_COMPLETED`) are documented as "set at most one to true" but not enforced. Acceptable for dev fixtures.
@@ -211,6 +199,11 @@ Tier-1 small wins first (Codex's review reordering: low-risk, high-leverage). La
 ### chrome.storage namespace convention
 - **Destination:** v2.1 (CC's Sprint 7 open question)
 - **Rationale:** Yoink writes several keys to `chrome.storage.local` (e.g., `yoink_setup_auto_open_at`). No formal namespace prefix policy. Worth establishing "all Yoink keys start with `yoink_`" and documenting it.
+- **Trigger:** v2.1 cycle
+
+### Full-range Smart Screenshot Picker selection
+- **Destination:** v2.1
+- **Rationale:** Allow users to pick from the full set of extracted screenshots instead of just the default embedded ones. Requires backend API changes to serve thumbnail grid data.
 - **Trigger:** v2.1 cycle
 
 ---

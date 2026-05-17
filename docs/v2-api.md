@@ -1,12 +1,12 @@
 # Yoink v2 API contract
 
-Status: implemented through v2.1 Sprint 11
+Status: implemented through v2.0 Sprint 11
 Scope: Playlist Mode, settings, file serving, and MCP HTTP backend contract
 Non-goal: UI design, Channel Decoder, Niche Corpus, or Mac installer work
 
 ## Overview
 
-Yoink v2 adds an async job model for playlist extraction while preserving the v1 single-video flow exactly as-is. `/extract` and `/session/add` remain synchronous and keep their current request and response shapes for backward compatibility; as of v2.1, `/extract` also writes a side-effect `kind: "single"` job record for recent-activity UI. Playlist Mode uses new `/playlist/*` and `/jobs/*` endpoints: the client previews a playlist, starts a job, polls progress, and can cancel mid-flight. This job model is the foundation for later Channel Decoder and Niche Corpus work, but those endpoints are intentionally out of scope for this contract.
+Yoink v2 adds an async job model for playlist extraction while preserving the v1 single-video flow exactly as-is. `/extract` and `/session/add` remain synchronous and keep their current request and response shapes for backward compatibility; as of v2.0, `/extract` also writes a side-effect `kind: "single"` job record for recent-activity UI. Playlist Mode uses new `/playlist/*` and `/jobs/*` endpoints: the client previews a playlist, starts a job, polls progress, and can cancel mid-flight. This job model is the foundation for later Channel Decoder and Niche Corpus work, but those endpoints are intentionally out of scope for this contract.
 
 ## Auth and protocol baseline
 

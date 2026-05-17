@@ -17,9 +17,9 @@ The "YouTube layer for any AI agent" release. Three adoption funnels: Chrome ext
 - **Hook Type classification.** Optional Anthropic-powered classification of each video's opening style across 9 categories: curiosity gap, question, contrarian, story open, promise/list, demo, authority, stakes, other.
 - **Smart Screenshot Picker.** Opt-in post-extraction grid for selecting which screenshots make the clipboard.
 - **Setup page** (`setup.html`) with BYO Anthropic API key flow, feature toggles, and MCP config snippet generator for Claude Desktop, Cursor, and generic stdio clients.
-- **Anthropic API key encryption.** Keys stored via Windows Credential Manager (`keyring` library), never plaintext. Automatic migration from v2.0 betas that stored keys in `settings.json`.
+- **Anthropic API key encryption.** Keys stored via Windows Credential Manager (`keyring` library), never plaintext. Migrates any plaintext anthropic_key from settings.json into Windows Credential Manager on first run.
 - **Job persistence across helper restarts.** `/jobs` state survives helper restart via `%LOCALAPPDATA%\Yoink\jobs.json`. In-flight jobs are marked failed with `error="server restarted"`; users restart them manually.
-- **Hook Type taxonomy capture.** Every successful classification appends to `%LOCALAPPDATA%\Yoink\taxonomy.json` (deduplicated by video ID) for future v1.2 dataset queries.
+- **Hook Type taxonomy capture.** Every successful classification appends to `%LOCALAPPDATA%\Yoink\taxonomy.json` (deduplicated by video ID) for v2.0 dataset queries via `GET /taxonomy` and the `get_taxonomy` MCP tool.
 - **Job recovery on popup reopen.** If you close the popup mid-playlist, reopening it resumes from the running job state via `GET /jobs`.
 - **Polling resilience.** Helper-disconnect banner appears after 5 seconds of failed polls. After 30 seconds, the setup guide auto-opens in a new tab (rate-limited to once per 5 minutes across popup sessions). Recovery is automatic when the helper comes back.
 - **Active-playlist pill.** When a playlist is running and the user switches to single-video mode, a persistent pill shows playlist progress. Click to return to the playlist view.
@@ -28,7 +28,7 @@ The "YouTube layer for any AI agent" release. Three adoption funnels: Chrome ext
 - **`/file` endpoint** for sandboxed thumbnail serving to the popup.
 - **MCP `yoink_video` job logging.** Agent-triggered single-video yoinks now appear in `/jobs` and the recent-yoinks surface, matching the extension flow.
 - **`docs/security.md`** rewritten to cover v2 reality: keyring, token-gated endpoints, `/file` sandbox, MCP HTTP, `jobs.json` and `taxonomy.json` persistence, and the v2 threat model.
-- **`docs/v2-smoke-test.md`** — 81-item pre-launch smoke checklist.
+- **`docs/v2-smoke-test.md`** — 84-checkpoint pre-launch smoke checklist.
 - **Banner-link accessibility.** Disconnect-banner setup link announces "Opens setup guide in a new tab" to screen readers.
 
 ### Changed
