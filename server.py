@@ -43,6 +43,13 @@ else:
 HERE = Path(__file__).parent.resolve()
 sys.path.insert(0, str(HERE))
 
+
+def _read_version() -> str:
+    version = (HERE / "VERSION").read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise RuntimeError(f"Invalid VERSION file value: {version!r}")
+    return version
+
 # When shipped via the Windows installer, ffmpeg.exe lives next to server.py
 # in a `bin\` folder. Prepend it to PATH so subprocess calls (`ffmpeg ...`)
 # find the bundled binary without depending on the user's environment. No-op
@@ -56,7 +63,7 @@ from yt_extract import parse_srt, slugify, fmt_time  # noqa: E402
 # --- Constants -------------------------------------------------------------
 HOST = "127.0.0.1"
 PORT = 5179
-VERSION = "2.0.0"
+VERSION = _read_version()
 ALLOWED_ORIGINS = {
     "https://www.youtube.com",
     "https://m.youtube.com",
