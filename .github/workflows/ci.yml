@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches:
+      - v2-integration
+      - main
+
+jobs:
+  extension-static:
+    name: extension static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Parse extension JavaScript
+        run: |
+          find extension -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Validate JSON files
+        run: |
+          python -m json.tool extension/manifest.json >/dev/null
+          python -m json.tool extension/prompts.json >/dev/null
+          python -m json.tool topics.json >/dev/null
+
+      - name: Check manifest version against VERSION
+        run: |
+          count="$(grep -c '"version"' extension/manifest.json)"
+          if [ "$count" -ne 1 ]; then
+            echo "extension/manifest.json must contain exactly one version field; found $count"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          manifest = json.loads(Path("extension/manifest.json").read_text(encoding="utf-8"))
+          if manifest.get("version") != version:
+              raise SystemExit(f"manifest version {manifest.get('version')!r} != VERSION {version!r}")
+          PY
+
+      - name: Guard against noisy extension logs
+        run: |
+          if grep -nE 'console\.log\([[:space:]]*"\[Yoink\]' extension/lib/extract.js; then
+            echo 'Unexpected console.log("[Yoink]"...) in extension/lib/extract.js'
+            exit 1
+          fi
+
+  backend-static:
+    name: backend Python static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile backend Python files
+        run: |
+          files=(server.py yoink_mcp.py yoink_mcp_tools.py)
+          if [ -f index.py ]; then files+=(index.py); fi
+          python -m py_compile "${files[@]}"
+
+      - name: Check MCP tool floor
+        run: |
+          # Bump to 12 when Sprint 15 merges, 13 when Sprint 16 merges.
+          count="$(grep -c '@mcp\.tool' yoink_mcp.py)"
+          if [ "$count" -lt 10 ]; then
+            echo "Expected at least 10 MCP tools, found $count"
+            exit 1
+          fi
+
+  doc-accuracy:
+    name: doc accuracy checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Guard security doc version drift
+        run: |
+          if grep -nE 'v2\.1' docs/security.md; then
+            echo "docs/security.md still references v2.1"
+            exit 1
+          fi
+
+      - name: Compare VERSION and manifest
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          manifest = json.loads(Path("extension/manifest.json").read_text(encoding="utf-8"))
+          if manifest.get("version") != version:
+              raise SystemExit(f"manifest version {manifest.get('version')!r} != VERSION {version!r}")
+          PY
+
+      - name: Compare MCP tool counts across code and docs
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          mcp_py = Path("yoink_mcp.py").read_text(encoding="utf-8")
+          code_count = len(re.findall(r"^\s*@mcp\.tool\b", mcp_py, re.M))
+
+          mcp_doc = Path("docs/v2-mcp.md").read_text(encoding="utf-8")
+          doc_count = len(re.findall(r"^### [a-z][a-z_]+$", mcp_doc, re.M))
+          if doc_count != code_count:
+              raise SystemExit(f"docs/v2-mcp.md documents {doc_count} tools, code has {code_count}")
+
+          for path in ("README.md", "CHANGELOG.md"):
+              text = Path(path).read_text(encoding="utf-8")
+              counts = [
+                  int(m.group(1))
+                  for m in re.finditer(r"MCP server[^\n]*?\b(\d+)\s+tools\b", text, re.I)
+              ]
+              if not counts:
+                  raise SystemExit(f"{path} has no 'MCP server with N tools' count")
+              bad = [c for c in counts if c != code_count]
+              if bad:
+                  raise SystemExit(f"{path} MCP tool counts {counts} do not match code count {code_count}")
+          PY
+
+  bash-lint:
+    name: bash script lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint launch readiness script
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck scripts/verify-launch-readiness.sh
+          else
+            bash -n scripts/verify-launch-readiness.sh
+          fi
