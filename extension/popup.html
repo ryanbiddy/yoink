@@ -648,7 +648,7 @@
   <div class="row">
     <span id="dot" class="dot"></span>
     <span id="status">Checking Yoink...</span>
-    <a id="status-help" class="edit-prompts-link hidden" style="margin-left: auto;">Click for instructions →</a>
+    <a id="status-help" role="button" tabindex="0" class="edit-prompts-link hidden" style="margin-left: auto;">Click for instructions →</a>
   </div>
 
   <!-- ============================================================
@@ -663,7 +663,7 @@
     <div id="picker-source-meta" class="picker-source-meta">—</div>
     <div class="picker-toolbar">
       <span id="picker-count">0 selected</span>
-      <a id="picker-select-all" class="picker-toggle">Deselect all</a>
+      <a id="picker-select-all" role="button" tabindex="0" class="picker-toggle">Deselect all</a>
     </div>
     <div id="picker-grid" class="picker-grid"></div>
     <div id="picker-error" class="picker-error hidden"></div>
@@ -720,7 +720,7 @@
   <div class="panel" id="recent-panel">
     <div class="panel-title">
       <span>Recent yoinks</span>
-      <a class="edit-prompts-link" id="open-index">View all yoinks →</a>
+      <a class="edit-prompts-link" id="open-index" role="button" tabindex="0">View all yoinks →</a>
     </div>
     <div id="recent-yoinks" class="recent">
       <div class="panel-muted" style="font-size:11px;padding:4px 6px">No yoinks yet.</div>
@@ -793,8 +793,8 @@
 
     <!-- Step 1: paste URL + preview -->
     <div class="panel" id="pl-input-panel">
-      <div class="panel-title">YouTube playlist URL</div>
-      <input id="pl-url" type="text" placeholder="https://www.youtube.com/playlist?list=...">
+      <div class="panel-title" id="pl-url-label">YouTube playlist URL</div>
+      <input id="pl-url" type="text" aria-labelledby="pl-url-label" placeholder="https://www.youtube.com/playlist?list=...">
       <button id="pl-preview-btn" class="secondary">Preview</button>
       <div id="pl-input-error" class="pl-error hidden"></div>
       <!-- v6 (item 3): recoverActiveJob populates this when no in-flight
@@ -888,8 +888,8 @@
         link/thumbnail.
       </div>
       <div style="flex-shrink:0;white-space:nowrap;display:flex;flex-direction:column;align-items:flex-end;gap:2px">
-        <a id="open-settings" class="edit-prompts-link" title="Open Yoink settings">⚙ Settings</a>
-        <a id="open-mcp-setup" class="edit-prompts-link" title="Use Yoink with Claude Desktop / Cursor / ChatGPT Desktop">Use with AI agents →</a>
+        <a id="open-settings" role="button" tabindex="0" class="edit-prompts-link" title="Open Yoink settings">⚙ Settings</a>
+        <a id="open-mcp-setup" role="button" tabindex="0" class="edit-prompts-link" title="Use Yoink with Claude Desktop / Cursor / ChatGPT Desktop">Use with AI agents →</a>
       </div>
     </div>
   </div>

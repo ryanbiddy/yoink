@@ -72,6 +72,19 @@ const destHint = document.getElementById("dest-hint");
 const DEST_HINT_DEFAULT = destHint ? destHint.textContent : "";
 const DEST_DISABLED_TIP = "Server must be running to yoink";
 
+// Make a link-styled control (an <a role="button">) keyboard-operable:
+// Enter or Space fires the element's existing click handler. Mirrors the
+// keydown wiring on #active-playlist-pill.
+function wireKeyActivation(el) {
+  if (!el) return;
+  el.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      el.click();
+    }
+  });
+}
+
 function setDestButtonsEnabled(enabled) {
   for (const b of [sendClaudeBtn, sendChatgptBtn]) {
     if (!b) continue;
@@ -109,6 +122,7 @@ if (statusHelp) {
     });
     window.close();
   });
+  wireKeyActivation(statusHelp);
 }
 
 // ---- Interval setting -----------------------------------------------------
@@ -212,7 +226,7 @@ startBtn.addEventListener("click", async () => {
     const res = await STC.startSession(name);
     if (!res || !res.ok) {
       const msg = (res && res.error) || "Failed to start session.";
-      alert(msg); // simple inline error — popup is a tight space
+      showToast(msg);
       return;
     }
     sessionNameInput.value = "";
@@ -252,14 +266,14 @@ endBtn.addEventListener("click", async () => {
   try {
     res = await STC.closeSession(id);
   } catch (e) {
-    alert(`Couldn't reach server: ${e}`);
+    showToast(`Couldn't reach server: ${e}`);
     endBtn.disabled = false;
     endBtn.textContent = "End session";
     return;
   }
 
   if (!res || !res.ok) {
-    alert((res && res.error) || "Failed to close session.");
+    showToast((res && res.error) || "Failed to close session.");
     endBtn.disabled = false;
     endBtn.textContent = "End session";
     return;
@@ -503,6 +517,7 @@ document.getElementById("open-index").addEventListener("click", async (ev) => {
     showToast("Couldn't open the yoinks index — server may be down.");
   }
 });
+wireKeyActivation(document.getElementById("open-index"));
 
 // ---- Settings link (Sprint 2) ---------------------------------------------
 // Lives in the popup footer so it's visible in both single-video and playlist
@@ -518,6 +533,7 @@ if (openSettingsLink) {
     });
     window.close();
   });
+  wireKeyActivation(openSettingsLink);
 }
 
 // ---- MCP setup link (Sprint 4) --------------------------------------------
@@ -534,6 +550,7 @@ if (openMcpLink) {
     });
     window.close();
   });
+  wireKeyActivation(openMcpLink);
 }
 
 // ---- Boot -----------------------------------------------------------------
@@ -1711,6 +1728,7 @@ window.addEventListener("unload", () => {
     }
     updateCount();
   });
+  wireKeyActivation(pickerSelectAllLink);
 
   // ---- Activation ----
   function showError(msg) {
@@ -1789,7 +1807,7 @@ window.addEventListener("unload", () => {
     if (!pendingPicker) { hidePicker(); return; }
     pickerCopyBtn.disabled = true;
     pickerCancelBtn.disabled = true;
-    pickerCopyBtn.textContent = kind === "copy" ? "Copying…" : "Copying…";
+    pickerCopyBtn.textContent = kind === "copy" ? "Copying…" : "Cancelling…";
 
     // Source corpus: prefer multimodal paste so KEPT screenshots stay
     // base64-embedded. Falls back to yoink_md when corpus_md_paste isn't

@@ -164,7 +164,6 @@
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const targetUrl = `${SERVER}/extract`;
     const requestBody = { url, interval };
-    console.log("[Yoink] POST", targetUrl, requestBody);
     try {
       let res;
       try {
