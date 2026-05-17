@@ -70,7 +70,12 @@ const sendClaudeBtn = document.getElementById("send-claude");
 const sendChatgptBtn = document.getElementById("send-chatgpt");
 const destHint = document.getElementById("dest-hint");
 const DEST_HINT_DEFAULT = destHint ? destHint.textContent : "";
-const DEST_DISABLED_TIP = "Server must be running to yoink";
+const DEST_DISABLED_TIP = "Yoink a video first";
+const LAST_YOINK_CLIPBOARD_KEY = "yoink_last_clipboard_at";
+const LAST_YOINK_WINDOW_MS = 5 * 60 * 1000;
+const RECENT_FAILURES_KEY = "yoink_recent_failures";
+let serverOnline = false;
+let lastYoinkAt = 0;
 
 // Make a link-styled control (an <a role="button">) keyboard-operable:
 // Enter or Space fires the element's existing click handler. Mirrors the
@@ -85,31 +90,60 @@ function wireKeyActivation(el) {
   });
 }
 
-function setDestButtonsEnabled(enabled) {
+function hasRecentClipboardYoink() {
+  return !!lastYoinkAt && Date.now() - lastYoinkAt <= LAST_YOINK_WINDOW_MS;
+}
+
+function updateDestButtons() {
+  const recent = hasRecentClipboardYoink();
+  const enabled = serverOnline && recent;
   for (const b of [sendClaudeBtn, sendChatgptBtn]) {
     if (!b) continue;
     b.disabled = !enabled;
-    b.title = enabled ? "" : DEST_DISABLED_TIP;
+    b.title = enabled
+      ? ""
+      : (serverOnline ? DEST_DISABLED_TIP : "Server must be running to yoink");
   }
   if (destHint) {
-    destHint.textContent = enabled
-      ? DEST_HINT_DEFAULT
-      : "Start the Yoink helper to enable these.";
+    if (!serverOnline) {
+      destHint.textContent = "Start the Yoink helper to enable these.";
+    } else if (!recent) {
+      destHint.textContent = "Yoink a video first. Destinations unlock for 5 minutes after a successful copy.";
+    } else {
+      destHint.textContent = DEST_HINT_DEFAULT;
+    }
   }
 }
+
+function markClipboardYoinkNow() {
+  lastYoinkAt = Date.now();
+  updateDestButtons();
+  try {
+    chrome.storage.local.set({ [LAST_YOINK_CLIPBOARD_KEY]: lastYoinkAt });
+  } catch { /* ignore */ }
+}
+
+try {
+  chrome.storage.local.get({ [LAST_YOINK_CLIPBOARD_KEY]: 0 }, (items) => {
+    lastYoinkAt = Number(items && items[LAST_YOINK_CLIPBOARD_KEY]) || 0;
+    updateDestButtons();
+  });
+} catch { /* ignore */ }
 
 async function ping() {
   const data = await STC.ping();
   if (data && data.ok) {
+    serverOnline = true;
     dot.classList.remove("down"); dot.classList.add("up");
     status.textContent = "Yoink is running.";
     if (statusHelp) statusHelp.classList.add("hidden");
-    setDestButtonsEnabled(true);
+    updateDestButtons();
   } else {
+    serverOnline = false;
     dot.classList.remove("up"); dot.classList.add("down");
     status.textContent = "Yoink server offline";
     if (statusHelp) statusHelp.classList.remove("hidden");
-    setDestButtonsEnabled(false);
+    updateDestButtons();
   }
 }
 
@@ -299,7 +333,10 @@ endBtn.addEventListener("click", async () => {
     ? `Session yoinked! ${lines}. Pick a destination above and paste.`
     : `Session closed. ${lines}. Clipboard failed — corpus.md is in the session folder (already open in Explorer).`;
   await chrome.runtime.sendMessage({ type: "notify", title: "Research session yoinked", message: note });
-  if (copied) showToast("Session yoinked! Pick a destination above.");
+  if (copied) {
+    markClipboardYoinkNow();
+    showToast("Session yoinked! Pick a destination above.");
+  }
 
   // Large-corpus warning
   if ((res.corpus_md || "").length > CORPUS_WARN_CHARS) {
@@ -459,15 +496,98 @@ clearBtn.addEventListener("click", () => {
 // ---- Recent yoinks --------------------------------------------------------
 const recentYoinksEl = document.getElementById("recent-yoinks");
 
+function loadRecentFailures() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get({ [RECENT_FAILURES_KEY]: [] }, (items) => {
+        const failures = Array.isArray(items && items[RECENT_FAILURES_KEY])
+          ? items[RECENT_FAILURES_KEY]
+          : [];
+        resolve(failures.slice(0, 5));
+      });
+    } catch { resolve([]); }
+  });
+}
+
+function saveRecentFailures(failures) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set({ [RECENT_FAILURES_KEY]: failures.slice(0, 5) }, resolve);
+    } catch { resolve(); }
+  });
+}
+
+async function removeRecentFailure(id) {
+  const failures = await loadRecentFailures();
+  await saveRecentFailures(failures.filter((f) => f.id !== id));
+  await loadRecentYoinks();
+}
+
+function renderFailureRow(failure) {
+  const row = document.createElement("div");
+  row.className = "recent-failure";
+  row.title = failure.error || "";
+
+  const title = document.createElement("div");
+  title.className = "recent-failure-title";
+  title.textContent = `Failed: ${failure.title || failure.videoId || "YouTube video"}`;
+
+  const error = document.createElement("div");
+  error.className = "recent-failure-error";
+  error.textContent = failure.error || "Yoink failed.";
+
+  const actions = document.createElement("div");
+  actions.className = "recent-failure-actions";
+
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Retry";
+  retry.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const videoId = failure.videoId || (failure.url && STC.extractVideoId(failure.url));
+    if (!videoId) {
+      showToast("Can't retry — missing video URL.");
+      return;
+    }
+    await removeRecentFailure(failure.id);
+    chrome.storage.local.set({ auto_yoink: { videoId, ts: Date.now() } }, () => {
+      chrome.tabs.create({
+        url: failure.url || `https://www.youtube.com/watch?v=${videoId}`,
+        active: true,
+      });
+      window.close();
+    });
+  });
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.textContent = "Dismiss";
+  dismiss.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    removeRecentFailure(failure.id);
+  });
+
+  actions.appendChild(retry);
+  actions.appendChild(dismiss);
+  row.appendChild(title);
+  row.appendChild(error);
+  row.appendChild(actions);
+  return row;
+}
+
 async function loadRecentYoinks() {
   if (!recentYoinksEl) return;
   let recent = [];
+  const failures = await loadRecentFailures();
   try {
     const res = await STC.listRecent();
     recent = (res && res.recent) || [];
   } catch { /* server may be down — leave the placeholder */ }
   recentYoinksEl.innerHTML = "";
-  if (!recent.length) {
+  for (const failure of failures) {
+    recentYoinksEl.appendChild(renderFailureRow(failure));
+  }
+  if (!recent.length && !failures.length) {
     const empty = document.createElement("div");
     empty.className = "panel-muted";
     empty.style.cssText = "font-size:11px;padding:4px 6px";
@@ -490,11 +610,11 @@ async function loadRecentYoinks() {
 
 // ---- Destination buttons --------------------------------------------------
 const CLAUDE_URL = "https://claude.ai/new";
-const CHATGPT_URL = "https://chat.openai.com/?model=gpt-4o";
+const CHATGPT_URL = "https://chatgpt.com/";
 
 function openDestination(url, label) {
   chrome.tabs.create({ url, active: true });
-  showToast(`Yoinked! Paste with Ctrl+V in ${label}.`);
+  showToast(`Opened ${label} — paste your most recent yoink.`);
 }
 
 document.getElementById("send-claude").addEventListener("click", () => {
@@ -1340,7 +1460,10 @@ window.addEventListener("unload", () => {
 
     showOnly(donePanel);
 
-    if (copied) showToast("Playlist yoinked! Paste in Claude or ChatGPT.");
+    if (copied) {
+      markClipboardYoinkNow();
+      showToast("Playlist yoinked! Paste in Claude or ChatGPT.");
+    }
   }
 
   function renderFailedList(failed) {
@@ -1831,11 +1954,20 @@ window.addEventListener("unload", () => {
     await _clearPending();
     _revokeThumbBlobs(); // Sprint 4 (1c): release blob URLs from getScreenshotThumbnail
 
-    // Open Claude tab to match the v1 auto-copy flow, then close popup.
-    try {
-      await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
-    } catch (e) {
-      console.warn("[picker] tab create failed", e);
+    if (copied) {
+      markClipboardYoinkNow();
+      // Open Claude tab to match the v1 auto-copy flow, then close popup.
+      try {
+        await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
+      } catch (e) {
+        console.warn("[picker] tab create failed", e);
+      }
+    } else {
+      try {
+        await chrome.runtime.sendMessage({ type: "clipboardRetry", text: clipboardText });
+      } catch { /* ignore */ }
+      window.close();
+      return;
     }
 
     // Sprint 4 (1a): route through STC.buildYoinkedMessage so the picker
@@ -1888,9 +2020,18 @@ window.addEventListener("unload", () => {
   })();
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.pending_picker) return;
-    const next = changes.pending_picker.newValue;
-    if (next) activate(next);
-    else { _revokeThumbBlobs(); hidePicker(); }
+    if (area !== "local") return;
+    if (changes.pending_picker) {
+      const next = changes.pending_picker.newValue;
+      if (next) activate(next);
+      else { _revokeThumbBlobs(); hidePicker(); }
+    }
+    if (changes[LAST_YOINK_CLIPBOARD_KEY]) {
+      lastYoinkAt = Number(changes[LAST_YOINK_CLIPBOARD_KEY].newValue) || 0;
+      updateDestButtons();
+    }
+    if (changes[RECENT_FAILURES_KEY]) {
+      loadRecentYoinks();
+    }
   });
 })();

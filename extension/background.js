@@ -20,16 +20,21 @@ const OFFSCREEN_URL = "offscreen.html";
 // CLIPBOARD covers the existing copy path; MATCH_MEDIA lets the doc stay
 // alive so it can push prefers-color-scheme change events back here.
 const OFFSCREEN_REASONS = ["CLIPBOARD", "MATCH_MEDIA"];
+const LAST_YOINK_CLIPBOARD_KEY = "yoink_last_clipboard_at";
+const _clipboardRetryPayloads = new Map();
 
 const LINK_PATTERNS = [
   "https://www.youtube.com/watch*",
   "https://youtu.be/*",
   "https://www.youtube.com/shorts/*",
   "https://m.youtube.com/watch*",
+  "https://m.youtube.com/shorts/*",
 ];
 const PAGE_PATTERNS = [
   "https://www.youtube.com/watch*",
   "https://www.youtube.com/shorts/*",
+  "https://m.youtube.com/watch*",
+  "https://m.youtube.com/shorts/*",
 ];
 
 // ---- Lifecycle ------------------------------------------------------------
@@ -198,6 +203,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "clipboardRetry" && typeof msg.text === "string") {
+    notifyClipboardRetry(msg.text).then((id) => sendResponse({ ok: !!id, id }));
+    return true;
+  }
+
   if (msg.type === "themeChanged" && typeof msg.isDark === "boolean") {
     updateIconForTheme(msg.isDark).catch((e) => console.warn("[stc] setIcon failed", e));
     return;
@@ -251,7 +261,7 @@ function tryOpenPopup() {
 }
 
 // ---- Notifications -------------------------------------------------------
-function notify(title, message) {
+function notify(title, message, extraOptions = {}) {
   return new Promise((resolve) => {
     try {
       chrome.notifications.create({
@@ -260,6 +270,7 @@ function notify(title, message) {
         title,
         message,
         priority: 1,
+        ...extraOptions,
       }, (id) => resolve(id));
     } catch (e) {
       console.warn("[stc] notification failed", e);
@@ -267,6 +278,39 @@ function notify(title, message) {
     }
   });
 }
+
+async function markClipboardYoinkNow() {
+  try {
+    await chrome.storage.local.set({ [LAST_YOINK_CLIPBOARD_KEY]: Date.now() });
+  } catch { /* ignore */ }
+}
+
+async function notifyClipboardRetry(text) {
+  const id = await notify("Couldn't copy to clipboard", "Click Try again to retry the copy without opening a new tab.", {
+    buttons: [{ title: "Try again" }],
+  });
+  if (id) _clipboardRetryPayloads.set(id, text);
+  return id;
+}
+
+try {
+  chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
+    if (buttonIndex !== 0 || !_clipboardRetryPayloads.has(id)) return;
+    const text = _clipboardRetryPayloads.get(id);
+    _clipboardRetryPayloads.delete(id);
+    copyToClipboard(text).then(async (ok) => {
+      if (ok) {
+        await markClipboardYoinkNow();
+        notify("Copied to clipboard", "Open Claude or ChatGPT from the Yoink popup, then paste.");
+      } else {
+        notify("Copy still blocked", "Open the saved yoink folder and copy the markdown file manually.");
+      }
+    });
+  });
+  chrome.notifications.onClosed.addListener((id) => {
+    _clipboardRetryPayloads.delete(id);
+  });
+} catch { /* notifications unavailable in some test contexts */ }
 
 // ---- Offscreen (clipboard + theme detection) -----------------------------
 // The offscreen doc is now long-lived: closing it would kill the
@@ -514,6 +558,11 @@ async function runExtractJob(job) {
   // (Pillow missing in dev, generation failure, etc).
   const clipboardText = data.corpus_md_paste || data.yoink_md;
   const copied = await copyToClipboard(clipboardText);
+  if (!copied) {
+    await notifyClipboardRetry(clipboardText);
+    return;
+  }
+  await markClipboardYoinkNow();
   await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
 
   // Shared helper handles first-yoink-vs-subsequent copy + atomically marks
