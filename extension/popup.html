@@ -172,6 +172,32 @@
       white-space: nowrap;
     }
     .toast.show { opacity: 1; }
+    .backfill-banner {
+      margin: 0 0 10px;
+      padding: 7px 8px;
+      border: 1px solid #6a5a3a;
+      border-radius: 4px;
+      background: #3a2f1f;
+      color: #ffe6c9;
+      font-size: 11px;
+      line-height: 1.35;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .backfill-banner-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+    }
+    .backfill-banner a {
+      color: #ffd19a;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .backfill-banner a:hover { color: #fff1df; }
     .recent {
       margin-top: 6px;
       max-height: 110px;
@@ -719,6 +745,14 @@
 </head>
 <body>
   <h1>Yoink</h1>
+
+  <div id="backfill-banner" class="backfill-banner hidden">
+    <span id="backfill-text">Indexing your yoinks...</span>
+    <span class="backfill-banner-actions">
+      <a id="backfill-dismiss" role="button" tabindex="0">Hide</a>
+      <a id="backfill-cancel" role="button" tabindex="0">Cancel</a>
+    </span>
+  </div>
 
   <div class="row">
     <span id="dot" class="dot"></span>

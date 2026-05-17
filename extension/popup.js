@@ -63,6 +63,10 @@ const sessionWarn = document.getElementById("session-warn");
 const currentEl = document.getElementById("current-job");
 const queueEl = document.getElementById("queue-depth");
 const clearBtn = document.getElementById("clear-queue");
+const backfillBanner = document.getElementById("backfill-banner");
+const backfillText = document.getElementById("backfill-text");
+const backfillDismiss = document.getElementById("backfill-dismiss");
+const backfillCancel = document.getElementById("backfill-cancel");
 
 // ---- Server status --------------------------------------------------------
 const statusHelp = document.getElementById("status-help");
@@ -74,6 +78,7 @@ const DEST_DISABLED_TIP = "Yoink a video first";
 const LAST_YOINK_CLIPBOARD_KEY = "yoink_last_clipboard_at";
 const LAST_YOINK_WINDOW_MS = 5 * 60 * 1000;
 const RECENT_FAILURES_KEY = "yoink_recent_failures";
+const BACKFILL_DISMISSED_KEY = "yoink_backfill_dismissed_signature";
 let serverOnline = false;
 let lastYoinkAt = 0;
 
@@ -582,6 +587,135 @@ function renderFailureRow(failure) {
   return row;
 }
 
+// ---- Index backfill status -------------------------------------------------
+let backfillTimer = null;
+let lastBackfillSignature = "";
+let dismissedBackfillSignature = "";
+
+function stopBackfillPolling() {
+  if (backfillTimer) clearInterval(backfillTimer);
+  backfillTimer = null;
+}
+
+function backfillSignature(status) {
+  if (!status || status.state !== "running") return "";
+  return `running:${Number(status.total) || 0}`;
+}
+
+function readDismissedBackfill() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get({ [BACKFILL_DISMISSED_KEY]: "" }, (items) => {
+        dismissedBackfillSignature = String(items && items[BACKFILL_DISMISSED_KEY] || "");
+        resolve(dismissedBackfillSignature);
+      });
+    } catch {
+      dismissedBackfillSignature = "";
+      resolve("");
+    }
+  });
+}
+
+function writeDismissedBackfill(signature) {
+  dismissedBackfillSignature = signature || "";
+  try {
+    chrome.storage.local.set({ [BACKFILL_DISMISSED_KEY]: dismissedBackfillSignature });
+  } catch { /* ignore */ }
+}
+
+async function popupAuthedJson(path, init = {}) {
+  const doFetch = async (token) => {
+    const headers = Object.assign({}, init.headers || {});
+    if (token) headers["X-Yoink-Token"] = token;
+    return fetch(`${STC.SERVER}${path}`, Object.assign({}, init, {
+      headers,
+      mode: "cors",
+      credentials: "omit",
+    }));
+  };
+  let token = STC.getToken ? await STC.getToken() : null;
+  let res = await doFetch(token);
+  if (res.status === 403 && STC.getToken) {
+    token = await STC.getToken({ refresh: true });
+    res = await doFetch(token);
+  }
+  return res.json().catch(() => ({ ok: false, error: "Bad JSON" }));
+}
+
+function hideBackfillBanner() {
+  if (backfillBanner) backfillBanner.classList.add("hidden");
+}
+
+function renderBackfillStatus(status) {
+  if (!backfillBanner || !backfillText) return;
+  if (!status || status.state !== "running") {
+    hideBackfillBanner();
+    lastBackfillSignature = "";
+    writeDismissedBackfill("");
+    stopBackfillPolling();
+    return;
+  }
+
+  const signature = backfillSignature(status);
+  lastBackfillSignature = signature;
+  if (signature && signature === dismissedBackfillSignature) {
+    hideBackfillBanner();
+    return;
+  }
+
+  const current = Number.isFinite(Number(status.current)) ? Number(status.current) : 0;
+  const total = Number.isFinite(Number(status.total)) ? Number(status.total) : 0;
+  backfillText.textContent = `Indexing your yoinks: ${current} of ${total}...`;
+  backfillBanner.classList.remove("hidden");
+}
+
+async function pollBackfillStatus() {
+  if (document.hidden) return;
+  try {
+    const status = await popupAuthedJson("/index/backfill-status", { method: "GET" });
+    renderBackfillStatus(status || null);
+  } catch {
+    hideBackfillBanner();
+  }
+}
+
+function startBackfillPolling() {
+  stopBackfillPolling();
+  pollBackfillStatus();
+  backfillTimer = setInterval(pollBackfillStatus, 2000);
+}
+
+if (backfillDismiss) {
+  backfillDismiss.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    if (lastBackfillSignature) writeDismissedBackfill(lastBackfillSignature);
+    hideBackfillBanner();
+  });
+  wireKeyActivation(backfillDismiss);
+}
+
+if (backfillCancel) {
+  backfillCancel.addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    backfillCancel.textContent = "Cancelling...";
+    try {
+      await popupAuthedJson("/index/backfill-cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      hideBackfillBanner();
+      showToast("Indexing cancelled.");
+    } catch {
+      showToast("Couldn't cancel indexing.");
+    } finally {
+      backfillCancel.textContent = "Cancel";
+      pollBackfillStatus();
+    }
+  });
+  wireKeyActivation(backfillCancel);
+}
+
 function healthLabel(key) {
   return String(key || "")
     .replace(/_/g, " ")
@@ -777,6 +911,7 @@ refreshQueue();
 refreshActiveFromServer();
 loadRecentSessions();
 loadRecentYoinks();
+readDismissedBackfill().then(startBackfillPolling);
 
 const queueTimer = setInterval(refreshQueue, 1000);
 const pingTimer = setInterval(ping, 3000);
@@ -790,6 +925,15 @@ window.addEventListener("unload", () => {
   clearInterval(queueTimer);
   clearInterval(pingTimer);
   clearInterval(sessionTimer);
+  stopBackfillPolling();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopBackfillPolling();
+  } else {
+    startBackfillPolling();
+  }
 });
 
 // =====================================================================
