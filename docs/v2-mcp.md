@@ -6,7 +6,7 @@ Transports: stdio, plus an experimental authenticated local HTTP JSON-RPC helper
 
 ## Overview
 
-Yoink exposes its existing extraction, playlist, search, corpus, Comment Intelligence, Hook Type, and hook-taxonomy functionality as MCP tools. The tool implementation lives in `yoink_mcp_tools.py`; stdio (`yoink_mcp.py`) is the officially supported MCP transport, and the local HTTP JSON-RPC helper (`server.py` under `/mcp/v1`) wraps the same registry for clients that can use direct POST calls.
+Yoink exposes 12 MCP tools covering extraction, playlist jobs, search, corpus retrieval, citation maps, health scores, Comment Intelligence, Hook Type, and hook taxonomy. The tool implementation lives in `yoink_mcp_tools.py`; stdio (`yoink_mcp.py`) is the officially supported MCP transport, and the local HTTP JSON-RPC helper (`server.py` under `/mcp/v1`) wraps the same registry for clients that can use direct POST calls.
 
 ## Compatibility matrix
 
@@ -278,11 +278,23 @@ Return shape:
   "corpus_md": "# Video title\n...",
   "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\Topic\\video-slug",
   "video_id": "abc123DEF45",
-  "video_url": "https://www.youtube.com/watch?v=abc123DEF45"
+  "video_url": "https://www.youtube.com/watch?v=abc123DEF45",
+  "citations": [
+    {
+      "video_id": "abc123DEF45",
+      "kind": "transcript_chunk",
+      "seq": 0,
+      "timestamp_start": 0.0,
+      "timestamp_end": 6.2,
+      "text": "Opening transcript chunk...",
+      "file_path": null,
+      "youtube_deep_link": "https://youtube.com/watch?v=abc123DEF45&t=0s"
+    }
+  ]
 }
 ```
 
-`video_id` and `video_url` are additive v2.1 fields. They are populated from the per-video JSON sidecar when available and are `null` for legacy/malformed yoinks without sidecar metadata.
+`video_id`, `video_url`, and `citations` are additive fields. `video_id` and `video_url` are populated from the per-video JSON sidecar when available and are `null` for legacy/malformed yoinks without sidecar metadata. `citations` is best-effort and may be empty if the yoink has not been indexed yet.
 
 Errors:
 
@@ -389,13 +401,114 @@ Errors:
 - `{ "ok": false, "error": "hook_type must be a string" }`
 - `{ "ok": false, "error": "hook_type invalid" }`
 
+### get_citation_map
+
+Return pre-computed transcript and screenshot citations for a saved yoink. Each citation includes a timestamped YouTube deep link so agents can cite the source without reparsing markdown.
+
+Parameters:
+
+```json
+{ "slug": "video-slug" }
+```
+
+Return shape:
+
+```json
+{
+  "ok": true,
+  "video_id": "abc123DEF45",
+  "transcript_citations": [
+    {
+      "seq": 0,
+      "timestamp_start": 0.0,
+      "timestamp_end": 6.2,
+      "text": "Opening transcript chunk...",
+      "deep_link": "https://youtube.com/watch?v=abc123DEF45&t=0s"
+    }
+  ],
+  "screenshot_citations": [
+    {
+      "seq": 0,
+      "timestamp": 30.0,
+      "file_path": "C:\\Users\\Ryan\\Desktop\\Yoink\\Topic\\video-slug\\screenshots\\shot_0001.jpg",
+      "deep_link": "https://youtube.com/watch?v=abc123DEF45&t=30s"
+    }
+  ]
+}
+```
+
+Fields:
+
+- `transcript_citations` contains one entry per transcript chunk from the sidecar.
+- `screenshot_citations` contains one entry per screenshot from the sidecar.
+- `seq` preserves original order within each citation kind.
+- `deep_link` is a YouTube `watch?v=<id>&t=<seconds>s` URL.
+
+Errors:
+
+- `{ "ok": false, "error": "yoink not found" }`
+- `{ "ok": false, "error": "yoink has no video_id" }`
+- `{ "ok": false, "error": "rate limit exceeded: max 60/minute" }`
+
+Rate limit: 60 calls/minute per process.
+
+### get_yoink_health
+
+Return the extraction health score for a saved yoink. This is the same five-field health dict the popup renders in Recent yoinks.
+
+Parameters:
+
+```json
+{ "slug": "video-slug" }
+```
+
+Return shape:
+
+```json
+{
+  "ok": true,
+  "video_id": "abc123DEF45",
+  "health": {
+    "transcript": "ok",
+    "screenshots": "ok",
+    "comments": "ok",
+    "hook": "completed",
+    "comment_intelligence": "skipped"
+  }
+}
+```
+
+Health fields:
+
+| Field | Meaning |
+|---|---|
+| `transcript` | Transcript extraction status. |
+| `screenshots` | Screenshot extraction status. |
+| `comments` | Comment-fetch status. |
+| `hook` | Hook Type analysis status. |
+| `comment_intelligence` | Comment Intelligence status. |
+
+Status strings are intentionally compact (`ok`, `missing`, `skipped`, `pending`, `completed`, `failed`, or related backend status strings). UI clients should display the raw value when they do not recognize a newer status.
+
+Errors:
+
+- `{ "ok": false, "error": "yoink not found" }`
+- `{ "ok": false, "error": "no health data for this yoink" }`
+- `{ "ok": false, "error": "rate limit exceeded: max 60/minute" }`
+
+Rate limit: 60 calls/minute per process.
+
 ## Rate limits and abuse mitigations
 
 - `yoink_video`: 5 calls/minute per process.
 - `yoink_playlist`: 5 calls/minute per process.
 - `analyze_comments`: 10 calls/minute per process.
 - `classify_hook`: 10 calls/minute per process.
-- Read-only tools (`list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `get_job_status`, `get_taxonomy`) are not rate-limited.
+- `list_recent_yoinks`: 60 calls/minute per process.
+- `search_yoinks`: 30 calls/minute per process.
+- `get_citation_map`: 60 calls/minute per process.
+- `get_yoink_health`: 60 calls/minute per process.
+- Other read-only tools (`get_yoink_corpus`, `get_job_status`, `get_taxonomy`) are not rate-limited.
 
 Rate-limit errors return friendly tool payloads, for example:
 
