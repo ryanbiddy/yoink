@@ -50,6 +50,7 @@ const requestedHash = location.hash || "";
 const isSettingsMode = source === "popup"
   || requestedHash === "#mcp-settings"
   || requestedHash === "#skill-settings";
+const firstSettingsSection = document.getElementById("comment-intelligence");
 
 const step1 = document.getElementById("step-1");
 const step2 = document.getElementById("step-2");
@@ -121,6 +122,20 @@ function applySource() {
     step1.classList.add("hidden");
     step2.classList.add("hidden");
     markCurrent(step3);
+  } else if (isSettingsMode) {
+    // Returning users opened Settings / Agent Integration from the popup.
+    // Keep the install walkthrough out of the way and land directly on the
+    // settings surface they came here to manage.
+    step1.classList.add("hidden");
+    step2.classList.add("hidden");
+    step3.classList.add("hidden");
+    if (firstSettingsSection) markCurrent(firstSettingsSection);
+    requestAnimationFrame(() => {
+      const target = requestedHash
+        ? document.getElementById(requestedHash.replace(/^#/, ""))
+        : firstSettingsSection;
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   } else {
     markCurrent(step1);
   }

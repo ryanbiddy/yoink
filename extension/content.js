@@ -28,6 +28,8 @@
   // fixed-position button parented to <body> — it survives Shorts-to-Shorts
   // transitions and needs no anchor element at all.
   const SHORTS_FLOATING_CLASS = "stc-yt-shorts-floating";
+  const LAST_YOINK_CLIPBOARD_KEY = "yoink_last_clipboard_at";
+  const RECENT_FAILURES_KEY = "yoink_recent_failures";
 
   // ---- Styles (scoped via the unique class prefix) ----------------------
   const STYLE_ID = "stc-yt-styles";
@@ -348,6 +350,51 @@
     }
   }
 
+  function isMobileYouTube() {
+    try {
+      return new URL(window.location.href).hostname === "m.youtube.com";
+    } catch {
+      return false;
+    }
+  }
+
+  function usesFloatingButton() {
+    return isShortsPage() || isMobileYouTube();
+  }
+
+  function pageVideoTitle() {
+    const meta = document.querySelector("meta[name='title']");
+    const raw = (meta && meta.content) || document.title || "";
+    return raw.replace(/\s+-\s+YouTube\s*$/i, "").trim();
+  }
+
+  function markClipboardYoinkNow() {
+    try {
+      chrome.storage.local.set({ [LAST_YOINK_CLIPBOARD_KEY]: Date.now() });
+    } catch { /* ignore */ }
+  }
+
+  function rememberFailure(url, error) {
+    const videoId = STC.extractVideoId(url);
+    const entry = {
+      id: `${Date.now()}-${videoId || "video"}`,
+      url,
+      videoId,
+      title: pageVideoTitle(),
+      error,
+      failed_at: new Date().toISOString(),
+    };
+    try {
+      chrome.storage.local.get({ [RECENT_FAILURES_KEY]: [] }, (items) => {
+        const failures = Array.isArray(items && items[RECENT_FAILURES_KEY])
+          ? items[RECENT_FAILURES_KEY]
+          : [];
+        const next = [entry].concat(failures.filter((f) => f.url !== url)).slice(0, 5);
+        chrome.storage.local.set({ [RECENT_FAILURES_KEY]: next });
+      });
+    } catch { /* ignore */ }
+  }
+
   async function onClick(btn) {
     const url = normalizedCurrentVideoUrl();
     if (!url) return;
@@ -389,6 +436,7 @@
 
     if (!data || !data.ok) {
       const msg = STC.friendlyError(data && data.error);
+      rememberFailure(url, msg);
       setButtonState(btn, "error", "Yoink failed");
       btn.title = msg;
       notify("Yoink failed", msg);
@@ -434,6 +482,17 @@
       }
     }
 
+    if (!copied) {
+      try {
+        chrome.runtime.sendMessage({ type: "clipboardRetry", text: clipboardText });
+      } catch { /* ignore */ }
+      setButtonState(btn, "error", "Copy blocked");
+      btn.title = "Couldn't copy to clipboard. Use the notification's Try again button.";
+      resetButtonAfter(btn, 5000);
+      return;
+    }
+
+    markClipboardYoinkNow();
     openTab("https://claude.ai/new");
 
     // Same shared helper used by the SW queue path. First successful yoink
@@ -477,6 +536,7 @@
 
     if (!data || !data.ok) {
       const msg = STC.friendlyError(data && data.error);
+      rememberFailure(url, msg);
       setButtonState(btn, "error", "Yoink failed");
       btn.title = msg;
       notify("Yoink failed", msg);
@@ -514,15 +574,15 @@
       return false;
     }
 
-    const shorts = isShortsPage();
+    const floating = usesFloatingButton();
     const existing = document.getElementById(BTN_ID);
     if (existing) {
       const isFloating = existing.classList.contains(SHORTS_FLOATING_CLASS);
-      if (isFloating === shorts) {
+      if (isFloating === floating) {
         // Button already matches the current page type. The floating Shorts
-        // button (parented to <body>) needs nothing further; the /watch
-        // button is re-homed if YouTube re-rendered the metadata row.
-        if (!shorts) {
+        // or mobile button (parented to <body>) needs nothing further; the
+        // desktop /watch button is re-homed if YouTube re-rendered the row.
+        if (!floating) {
           const watchAnchor = findAnchor();
           if (watchAnchor && existing.parentElement !== watchAnchor) {
             watchAnchor.appendChild(existing);
@@ -530,21 +590,22 @@
         }
         return true;
       }
-      // Crossed between /watch and /shorts — discard and rebuild for the
-      // new layout (anchored pill vs. floating pill).
+      // Crossed between anchored desktop and floating mobile/Shorts layouts;
+      // discard and rebuild for the new page type.
       existing.remove();
     }
 
-    // /watch needs an anchor element to live in; Shorts floats on <body>.
-    const anchor = shorts ? null : findAnchor();
-    if (!shorts && !anchor) return false;
+    // Desktop /watch needs an anchor element to live in; Shorts and mobile
+    // YouTube float on <body> because their DOM uses different action rows.
+    const anchor = floating ? null : findAnchor();
+    if (!floating && !anchor) return false;
 
     injectStyles();
 
     const btn = document.createElement("button");
     btn.id = BTN_ID;
     btn.className = BTN_CLASS;
-    if (shorts) btn.classList.add(SHORTS_FLOATING_CLASS);
+    if (floating) btn.classList.add(SHORTS_FLOATING_CLASS);
     btn.type = "button";
     setButtonState(btn, "default", defaultLabel());
     applyStatusToButton(btn);
@@ -554,7 +615,7 @@
       onClick(btn);
     });
 
-    (shorts ? document.body : anchor).appendChild(btn);
+    (floating ? document.body : anchor).appendChild(btn);
     // Now that the button exists, fetch the latest active-session state and
     // re-label if needed.
     getActiveFromStorage().then((s) => {

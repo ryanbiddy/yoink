@@ -34,7 +34,9 @@
     {
       "matches": [
         "https://www.youtube.com/watch*",
-        "https://www.youtube.com/shorts/*"
+        "https://www.youtube.com/shorts/*",
+        "https://m.youtube.com/watch*",
+        "https://m.youtube.com/shorts/*"
       ],
       "js": ["lib/extract.js", "content.js"],
       "run_at": "document_idle"
