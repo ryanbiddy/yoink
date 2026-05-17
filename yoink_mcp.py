@@ -120,6 +120,24 @@ def classify_hook(slug: str) -> dict:
     return yoink_mcp_tools.call_tool("classify_hook", {"slug": slug})
 
 
+@mcp.tool(
+    name="get_taxonomy",
+    description=(
+        "Return captured Hook Type taxonomy rows, optionally "
+        "filtered by channel and hook_type."
+    ),
+)
+def get_taxonomy(
+    channel: str | None = None,
+    hook_type: str | None = None,
+    limit: int = 50,
+) -> dict:
+    return yoink_mcp_tools.call_tool(
+        "get_taxonomy",
+        {"channel": channel, "hook_type": hook_type, "limit": limit},
+    )
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
 
