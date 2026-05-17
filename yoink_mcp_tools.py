@@ -406,6 +406,19 @@ def get_yoink_health(args: dict[str, Any]) -> dict[str, Any]:
     return _ok(video_id=video_id or None, health=health)
 
 
+def find_mentions(args: dict[str, Any]) -> dict[str, Any]:
+    """Return every recorded mention of an entity across the library,
+    newest first, each with a timestamped YouTube deep link (Sprint 16)."""
+    name = args.get("entity") or args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return _err("entity name (string) is required")
+    limit = _limit_int(args.get("limit"), default=50, low=1, high=200)
+    # Index.find_mentions normalises the name itself, so the raw entity
+    # string is passed straight through.
+    rows = _b()._get_index().find_mentions(name.strip(), limit)
+    return _ok(mentions=rows)
+
+
 def analyze_comments_tool(args: dict[str, Any]) -> dict[str, Any]:
     b = _b()
     key = _saved_key()
@@ -660,6 +673,30 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             "slug": {"type": "string", "description": "Folder slug of the saved yoink."},
         }, ["slug"]),
         handler=get_yoink_health,
+        rate_limiter=_RateLimiter(60),
+    ),
+    "find_mentions": ToolSpec(
+        name="find_mentions",
+        description=(
+            "Find every place an entity (person, tool, product, company, "
+            "or topic) is mentioned across saved yoinks, newest first, each "
+            "with a timestamped YouTube deep link."
+        ),
+        input_schema=_schema({
+            "entity": {
+                "type": "string",
+                "description": "Entity name to look up (case-insensitive).",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 50,
+            },
+        }, ["entity"]),
+        handler=find_mentions,
+        # Backed by the SQLite index; rate-limited so an agent loop can't
+        # hammer it.
         rate_limiter=_RateLimiter(60),
     ),
 }

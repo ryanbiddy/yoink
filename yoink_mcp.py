@@ -157,6 +157,20 @@ def get_yoink_health(slug: str) -> dict:
     return yoink_mcp_tools.call_tool("get_yoink_health", {"slug": slug})
 
 
+@mcp.tool(
+    name="find_mentions",
+    description=(
+        "Find every mention of an entity (person, tool, product, company, "
+        "or topic) across saved yoinks, each with a timestamped YouTube "
+        "deep link."
+    ),
+)
+def find_mentions(entity: str, limit: int = 50) -> dict:
+    return yoink_mcp_tools.call_tool(
+        "find_mentions", {"entity": entity, "limit": limit}
+    )
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
 
