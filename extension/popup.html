@@ -172,6 +172,32 @@
       white-space: nowrap;
     }
     .toast.show { opacity: 1; }
+    .backfill-banner {
+      margin: 0 0 10px;
+      padding: 7px 8px;
+      border: 1px solid #6a5a3a;
+      border-radius: 4px;
+      background: #3a2f1f;
+      color: #ffe6c9;
+      font-size: 11px;
+      line-height: 1.35;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .backfill-banner-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+    }
+    .backfill-banner a {
+      color: #ffd19a;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .backfill-banner a:hover { color: #fff1df; }
     .recent {
       margin-top: 6px;
       max-height: 110px;
@@ -189,6 +215,43 @@
     }
     .recent-item:hover { background: #3a3a3f; color: #fff; }
     .recent-item .meta { color: #777; font-size: 10px; margin-left: 4px; }
+    .recent-item-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-width: 0;
+    }
+    .recent-item-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .health-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      width: 80px;
+      flex-shrink: 0;
+      justify-content: flex-end;
+    }
+    .health-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #6b6b70;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15);
+    }
+    .health-dot.ok {
+      background: #57d983;
+      box-shadow: 0 0 5px rgba(87,217,131,0.45);
+    }
+    .health-dot.missing {
+      background: #d9b457;
+      box-shadow: 0 0 5px rgba(217,180,87,0.35);
+    }
+    .health-dot.skipped { background: #68686d; }
     .recent-failure {
       margin: 4px 0 6px;
       padding: 6px;
@@ -682,6 +745,14 @@
 </head>
 <body>
   <h1>Yoink</h1>
+
+  <div id="backfill-banner" class="backfill-banner hidden">
+    <span id="backfill-text">Indexing your yoinks...</span>
+    <span class="backfill-banner-actions">
+      <a id="backfill-dismiss" role="button" tabindex="0">Hide</a>
+      <a id="backfill-cancel" role="button" tabindex="0">Cancel</a>
+    </span>
+  </div>
 
   <div class="row">
     <span id="dot" class="dot"></span>
