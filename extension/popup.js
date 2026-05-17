@@ -495,6 +495,13 @@ clearBtn.addEventListener("click", () => {
 
 // ---- Recent yoinks --------------------------------------------------------
 const recentYoinksEl = document.getElementById("recent-yoinks");
+const HEALTH_FIELDS = [
+  "transcript",
+  "screenshots",
+  "comments",
+  "hook",
+  "comment_intelligence",
+];
 
 function loadRecentFailures() {
   return new Promise((resolve) => {
@@ -575,6 +582,80 @@ function renderFailureRow(failure) {
   return row;
 }
 
+function healthLabel(key) {
+  return String(key || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function normalizeHealthValue(value) {
+  if (value == null) return { status: "skipped", reason: "" };
+  if (typeof value === "string") return { status: value, reason: "" };
+  if (typeof value === "boolean") {
+    return { status: value ? "ok" : "missing", reason: "" };
+  }
+  if (typeof value === "object") {
+    return {
+      status: String(value.status || value.state || value.result || (value.ok ? "ok" : "skipped")),
+      reason: String(value.reason || value.error || value.message || ""),
+    };
+  }
+  return { status: String(value), reason: "" };
+}
+
+function healthDotClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (["ok", "success", "complete", "completed", "available", "present", "pass"].includes(s)) {
+    return "ok";
+  }
+  if (["missing", "failed", "error", "warning", "warn", "blocked", "unavailable"].includes(s)) {
+    return "missing";
+  }
+  return "skipped";
+}
+
+function healthEntries(health) {
+  if (!health || typeof health !== "object") return [];
+  const keys = [];
+  for (const key of HEALTH_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(health, key)) keys.push(key);
+  }
+  for (const key of Object.keys(health)) {
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys.slice(0, 5).map((key) => {
+    const normalized = normalizeHealthValue(health[key]);
+    return { key, label: healthLabel(key), ...normalized };
+  });
+}
+
+function healthTooltip(entries) {
+  return entries.map((entry) => {
+    const reason = entry.reason ? ` - ${entry.reason}` : "";
+    return `${entry.label}: ${entry.status || "skipped"}${reason}`;
+  }).join("\n");
+}
+
+function renderHealthRow(health) {
+  const entries = healthEntries(health);
+  if (!entries.length) return null;
+
+  const row = document.createElement("span");
+  row.className = "health-row";
+  row.title = healthTooltip(entries);
+  row.setAttribute("aria-label", row.title);
+
+  for (const entry of entries) {
+    const dot = document.createElement("span");
+    const cls = healthDotClass(entry.status);
+    dot.className = `health-dot ${cls}`;
+    const reason = entry.reason ? ` - ${entry.reason}` : "";
+    dot.title = `${entry.label}: ${entry.status || "skipped"}${reason}`;
+    row.appendChild(dot);
+  }
+  return row;
+}
+
 async function loadRecentYoinks() {
   if (!recentYoinksEl) return;
   let recent = [];
@@ -599,8 +680,23 @@ async function loadRecentYoinks() {
     const item = document.createElement("div");
     item.className = "recent-item";
     item.title = r.folder || "";
-    item.innerHTML = `<span>${escapeHtml(r.title || "(untitled)")}</span>` +
-                     `<span class="meta">${escapeHtml(r.topic || "—")}</span>`;
+    const main = document.createElement("div");
+    main.className = "recent-item-main";
+
+    const text = document.createElement("span");
+    text.className = "recent-item-text";
+    const title = document.createElement("span");
+    title.textContent = r.title || "(untitled)";
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = r.topic || "—";
+    text.appendChild(title);
+    text.appendChild(meta);
+    main.appendChild(text);
+
+    const healthRow = renderHealthRow(r.health);
+    if (healthRow) main.appendChild(healthRow);
+    item.appendChild(main);
     item.addEventListener("click", () => {
       if (r.folder) STC.openFolder(r.folder);
     });

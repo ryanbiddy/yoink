@@ -189,6 +189,43 @@
     }
     .recent-item:hover { background: #3a3a3f; color: #fff; }
     .recent-item .meta { color: #777; font-size: 10px; margin-left: 4px; }
+    .recent-item-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-width: 0;
+    }
+    .recent-item-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .health-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      width: 80px;
+      flex-shrink: 0;
+      justify-content: flex-end;
+    }
+    .health-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #6b6b70;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15);
+    }
+    .health-dot.ok {
+      background: #57d983;
+      box-shadow: 0 0 5px rgba(87,217,131,0.45);
+    }
+    .health-dot.missing {
+      background: #d9b457;
+      box-shadow: 0 0 5px rgba(217,180,87,0.35);
+    }
+    .health-dot.skipped { background: #68686d; }
     .recent-failure {
       margin: 4px 0 6px;
       padding: 6px;
