@@ -135,6 +135,33 @@ def _fts_query(raw: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Entity graph (Sprint 16)
+# --------------------------------------------------------------------------
+# Allowed entity `type` values. Constrained here, not by a SQL CHECK: an
+# unknown type from the extraction worker is folded to 'other', not rejected.
+ENTITY_TYPES = ("person", "tool", "product", "topic", "company", "other")
+
+
+def normalize_entity_name(name: str) -> str:
+    """The matching key for the entities table: the name lowercased with all
+    punctuation and whitespace removed. 'GPT-4o' -> 'gpt4o',
+    'New York' -> 'newyork'. str.isalnum() is unicode-aware, so accented
+    letters survive while spaces and punctuation drop out."""
+    return "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+
+
+def _entity_deep_link(video_id: str, seconds) -> str:
+    """A timestamped watch URL for an entity mention. Mirrors server.py's
+    _youtube_deep_link; duplicated here so index.py stays self-contained."""
+    vid = (video_id or "").strip()
+    try:
+        t = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        t = 0
+    return f"https://youtube.com/watch?v={vid}&t={t}s"
+
+
+# --------------------------------------------------------------------------
 # Index
 # --------------------------------------------------------------------------
 class Index:
@@ -481,3 +508,122 @@ class Index:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- entities (Sprint 16) -------------------------------------------
+    def record_entities(self, video_id: str, entities: list[dict], *,
+                         source: str = "transcript") -> int:
+        """Write one extraction's worth of entities + mentions for a video.
+
+        Idempotent per video: a re-yoink first drops the video's previous
+        entity_mentions (and rolls their mention_count back) so re-running
+        the extraction worker never double-counts. Each entity is deduped on
+        (name_normalized, type) via INSERT OR IGNORE; an unrecognised type
+        folds to 'other'. The whole read-modify-write is one transaction.
+
+        ``entities`` is the worker's parsed list of
+        ``{name, type, mentions: [{timestamp, context}]}`` dicts. Returns the
+        number of mention rows written."""
+        if not video_id:
+            raise ValueError("record_entities: video_id is required")
+        now = _now_iso()
+        written = 0
+        with self._lock:
+            try:
+                # Idempotent re-yoink: clear this video's prior mentions and
+                # decrement the affected entities' denormalised counters.
+                prior = self._conn.execute(
+                    "SELECT entity_id, COUNT(*) AS n FROM entity_mentions "
+                    "WHERE video_id=? GROUP BY entity_id", (video_id,)
+                ).fetchall()
+                if prior:
+                    self._conn.execute(
+                        "DELETE FROM entity_mentions WHERE video_id=?", (video_id,)
+                    )
+                    for r in prior:
+                        self._conn.execute(
+                            "UPDATE entities "
+                            "SET mention_count = MAX(0, mention_count - ?) "
+                            "WHERE entity_id=?", (r["n"], r["entity_id"])
+                        )
+                for ent in entities or []:
+                    if not isinstance(ent, dict):
+                        continue
+                    name = str(ent.get("name") or "").strip()
+                    norm = normalize_entity_name(name)
+                    if not name or not norm:
+                        continue
+                    etype = str(ent.get("type") or "other").strip().lower()
+                    if etype not in ENTITY_TYPES:
+                        etype = "other"
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO entities "
+                        "(name, name_normalized, type, first_seen, last_seen, "
+                        " mention_count) VALUES (?, ?, ?, ?, ?, 0)",
+                        (name, norm, etype, now, now),
+                    )
+                    row = self._conn.execute(
+                        "SELECT entity_id FROM entities "
+                        "WHERE name_normalized=? AND type=?", (norm, etype)
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    entity_id = row["entity_id"]
+                    added = 0
+                    for m in ent.get("mentions") or []:
+                        if not isinstance(m, dict):
+                            continue
+                        ts = m.get("timestamp")
+                        try:
+                            ts = float(ts) if ts is not None else None
+                        except (TypeError, ValueError):
+                            ts = None
+                        ctx = m.get("context")
+                        ctx = str(ctx)[:500] if ctx else None
+                        self._conn.execute(
+                            "INSERT INTO entity_mentions "
+                            "(entity_id, video_id, source, timestamp, context) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (entity_id, video_id, source, ts, ctx),
+                        )
+                        added += 1
+                    if added:
+                        self._conn.execute(
+                            "UPDATE entities "
+                            "SET mention_count = mention_count + ?, last_seen=? "
+                            "WHERE entity_id=?", (added, now, entity_id)
+                        )
+                    written += added
+                self._conn.commit()
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+        return written
+
+    def find_mentions(self, name: str, limit: int = 50) -> list[dict]:
+        """Every recorded mention of an entity, newest first.
+
+        Matches on the normalised name (case/punctuation-insensitive) across
+        every type the name was tagged as, joining through to the yoink for
+        its slug/title/channel. Each row carries a timestamped deep link.
+        Returns [] for an unknown entity."""
+        norm = normalize_entity_name(name)
+        if not norm:
+            return []
+        sql = (
+            "SELECT y.video_id AS video_id, y.slug AS slug, y.title AS title, "
+            "       y.channel AS channel, em.source AS source, "
+            "       em.timestamp AS timestamp, em.context AS context "
+            "FROM entity_mentions em "
+            "JOIN entities e ON e.entity_id = em.entity_id "
+            "JOIN yoinks   y ON y.video_id  = em.video_id "
+            "WHERE e.name_normalized = ? "
+            "ORDER BY em.mention_id DESC LIMIT ?"
+        )
+        with self._lock:
+            rows = self._conn.execute(sql, (norm, max(1, int(limit)))).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["deep_link"] = _entity_deep_link(d.get("video_id"), d.get("timestamp"))
+            out.append(d)
+        return out
