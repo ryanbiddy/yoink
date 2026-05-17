@@ -5,7 +5,7 @@
 // Routes STC.playlist* / STC.jobStatus / STC.jobCancel through the local mock
 // layer (lib/mock-api.js) instead of the real server. See docs/v2-api.md
 // (lands on codex/v2-backend-playlist) for the contract these mocks shadow.
-const USE_MOCK_API = true;
+const USE_MOCK_API = false;
 globalThis.YOINK_USE_MOCK_API = USE_MOCK_API;
 
 const DEFAULT_INTERVAL = 30;
