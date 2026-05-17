@@ -13,7 +13,7 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 
 v2 ships three adoption paths:
 
-- **Chrome extension** (the creator path): one-click yoinks, plus Playlist Mode (up to 10 videos per job), AI-powered Hook Type classification, Comment Intelligence, and Smart Screenshot Picker.
+- **Chrome extension** (the creator path): one-click yoinks, plus Playlist Mode, Hook Type classification, Comment Intelligence (AI-powered, BYO key), and Smart Screenshot Picker (local).
 - **MCP server** (the agent path): 10 tools your AI can call directly. Officially tested with Claude Desktop and Cursor; works with most MCP-compatible clients.
 - **Operator Skill**: drop-in `SKILL.md` that turns Claude / OpenClaw / Hermes / Cursor / etc into a YouTube research analyst. Works across 8+ clients via the agentskills.io open standard.
 
@@ -43,8 +43,10 @@ Yoink v2 bundles a portable Skill at `skills/yoink/SKILL.md` and installs it to 
 **AI-powered analysis (v2, BYO Anthropic key)**
 - **Comment Intelligence** — clusters comment themes, extracts mentioned products/tools, flags notable disagreements. Three structured sections appended per video.
 - **Hook Type classification** — classifies each video's opening style across 9 hook categories (curiosity gap, question, contrarian, story open, promise/list, demo, authority, stakes, other) with brief explanation.
-- **Smart Screenshot Picker** — opt-in grid for choosing which screenshots make the clipboard.
 
+### Local feature: Smart Screenshot Picker
+
+Opt-in grid that shows the screenshots embedded in your clipboard paste so you can pick which to keep. Embed count is configurable on the setup page (default 4, max 12). Fully local — no API key, no network calls.
 **For agent developers (v2)**
 - **MCP server** with 10 tools: `yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`, `get_taxonomy`.
 - Stdio transport (officially tested with Claude Desktop + Cursor).
@@ -108,8 +110,8 @@ Videos are auto-sorted into topic folders under `Desktop\Yoink\` based on keywor
 See [BACKLOG.md](./BACKLOG.md) for v1.1 / v2.1 / v2.5 / v3 plans. Highlights:
 
 - **v1.1** (post-launch polish): Mac installer, system tray status, keyboard shortcut, auto-update check, editable prompts library, crash report opt-in
-- **v2.1**: Hook taxonomy query surface, cost estimator for AI features, YouTube Shorts support, single-video last-yoink affordance polish
-- **v2.5**: Channel Decoder mode, Niche Corpus mode, Critique-against-corpus, Cost estimator
+- **v2.1**: Hook taxonomy query surface, jobs.json compaction
+- **v2.5**: Channel Decoder mode, Niche Corpus mode, Critique-against-corpus
 - **v3**: Send to Project, Podcast extraction, multi-platform video support
 - **v4+**: Hosted version, public HTTPS API, most-yoinked leaderboard
 

@@ -59,7 +59,7 @@ Both are off by default. Enable per feature on the setup page. Your API key neve
 
 ### Optional local feature: Smart Screenshot Picker
 
-Opt-in grid for choosing which screenshots make the clipboard. Stays fully local — no API key, no network calls.
+Opt-in grid that shows the screenshots embedded in your clipboard paste so you can pick which to keep. Embed count is configurable on the setup page (default 4, max 12). Stays fully local — no API key, no network calls.
 
 ### Privacy summary
 
@@ -134,12 +134,11 @@ The Web Store will ask why each permission is requested. Pre-drafted answers:
 - **`clipboardWrite`** — Yoink writes the extracted markdown corpus to the user's clipboard so they can paste it into Claude or ChatGPT.
 - **`notifications`** — surfaces success and error toasts (e.g., "Yoinked! Saved to: Social Media Research.") so the user knows when an extraction completes.
 - **`storage`** — persists user settings (screenshot interval, clipboard screenshot cap, active research session, queue state, last-yoink affordance state) across browser sessions.
-- **`contextMenus`** — adds "Yoink this video" / "Yoink this page" / "Yoink into session" entries on YouTube right-click menus.
+- **`contextMenus`** — adds 'Yoink this video' and 'Yoink this page' entries on YouTube right-click menus; adds a third 'Yoink into session: <name>' entry when a research session is active.
 - **`activeTab`** — reads the current YouTube URL when the user clicks the extension action.
 - **`offscreen`** — the MV3 service worker uses an offscreen document to access the clipboard API (the only supported path in MV3).
 - **Host permissions:**
-  - `https://*.youtube.com/*` — content script injects the in-page Yoink button under every video
-  - `http://127.0.0.1:5179/*`, `http://localhost:5179/*` — the extension communicates with the local Yoink helper server
+  - `https://www.youtube.com/*`, `https://m.youtube.com/*`, `https://youtu.be/*`, `http://127.0.0.1:5179/*`, `http://localhost:5179/*` — content script matches www.youtube.com/watch* and www.youtube.com/shorts/* only; the extension communicates with the local Yoink helper server
 
 ## Single purpose statement
 

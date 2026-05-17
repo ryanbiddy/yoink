@@ -16,7 +16,7 @@ The helper never binds to a public network interface. The main security boundary
 | Malicious webpage tries to call `127.0.0.1:5179` | Yes | Token-gated endpoints require `X-Yoink-Token`; `/token` requires a custom `X-Yoink-Client` header and browser CORS/PNA preflight blocks normal webpages from setting it cross-origin. |
 | Malicious webpage probes whether Yoink is running | Not treated as secret | `/health` and `/ping` are public liveness probes. They reveal only `{ok:true, version}`. |
 | Local malware reads files or calls localhost | No | Malware already running as the user can read local files, call local ports, and modify output. Yoink does not try to sandbox against same-user malware. |
-| Another installed browser extension calls `/token` | Not fully | v2 accepts `chrome-extension://*` / `moz-extension://*` origins so Chromium forks and dev installs work. Published Chrome Web Store extension ID pinning is deferred until the final ID is known and stable. |
+| Another installed browser extension calls `/token` | Not fully | v2 accepts `chrome-extension://*` origins so Chromium forks and dev installs work. Published Chrome Web Store extension ID pinning is deferred until the final ID is known and stable. |
 | Network attacker | Mostly not applicable | The helper listens only on `127.0.0.1`, not LAN/public interfaces. |
 | Anthropic API key disclosure through settings | Mitigated | The key is stored in the OS credential store via `keyring`, not in `settings.json`, and is never returned by `GET /settings`. |
 | Dependency compromise | Partially | Direct downloads are SHA256-checked in `build.ps1`; pip packages are version-pinned but not hash-locked. |
@@ -34,7 +34,7 @@ These do not require `X-Yoink-Token`:
 `/token` returns the per-install helper token and is guarded by:
 
 - `X-Yoink-Client: yoink-extension`
-- `Origin` that is empty, `chrome-extension://*`, or `moz-extension://*`
+- `Origin` that is empty or `chrome-extension://*`
 - A server-wide 10 requests/minute rate limit
 
 The empty-Origin allowance is deliberate. Some Chromium service-worker fetches observed during Comet testing omit `Origin`. The custom-header+CORS preflight gate is the load-bearing browser CSRF defense.

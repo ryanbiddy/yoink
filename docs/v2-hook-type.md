@@ -1,6 +1,6 @@
 # Yoink v2 Hook Type contract
 
-Status: implemented in `codex/v2-sprint3`; taxonomy capture added in v2.1 Sprint 7
+Status: implemented in `codex/v2-sprint3`; taxonomy capture added in v2.0 Sprint 7
 
 ## Overview
 
@@ -144,7 +144,7 @@ Anthropic 401:
 
 ## Aggregation
 
-Starting in v2.1, every successful Hook Type classification is captured in `%LOCALAPPDATA%\Yoink\taxonomy.json` on Windows. The file is a JSON array of records:
+Starting in v2.0, every successful Hook Type classification is captured in `%LOCALAPPDATA%\Yoink\taxonomy.json` on Windows. The file is a JSON array of records:
 
 ```json
 {

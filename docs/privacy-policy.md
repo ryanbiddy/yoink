@@ -62,9 +62,7 @@ any server — there is no Yoink server to receive it.
   clears it automatically.
 - **Disable any AI feature at any time** from the setup page. With them
   off, Yoink makes no Anthropic calls at all.
-- **Uninstall Yoink at any time.** Uninstalling removes the extension,
-  the local helper, and its auto-start entry. Files Yoink already saved
-  to your Desktop remain yours to keep or delete.
+- **Uninstall Yoink at any time.** Remove the extension from chrome://extensions/ and uninstall the Yoink helper from Windows Settings → Apps; this also removes its auto-start entry. Files Yoink already saved to your Desktop remain yours to keep or delete.
 
 ## 5. Third parties
 
