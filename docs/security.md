@@ -1,6 +1,6 @@
 # Yoink security model
 
-Status: launch-facing for v2.1 pre-launch
+Status: launch-facing for v2.0 pre-launch
 
 Yoink is local-first software with two pieces:
 
@@ -110,7 +110,7 @@ Protocol validation failures return `4xx` JSON errors. Handled application failu
 
 Comment Intelligence and Hook Type are optional BYO-key features. Normal Yoink extraction works without an Anthropic key.
 
-Starting in v2.1, the key is stored through Python `keyring`:
+Starting in v2.0, the key is stored through Python `keyring`:
 
 - Service: `Yoink`
 - Username: `anthropic_key`

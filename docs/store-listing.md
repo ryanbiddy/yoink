@@ -50,13 +50,16 @@ Yoink includes a portable `SKILL.md` using the agentskills.io open standard. Dro
 
 ### Optional AI-powered features (BYO Anthropic API key)
 
-Yoink stays free and local-only by default. Two optional analysis features call the Anthropic API using your own API key (stored securely via Windows Credential Manager — never in plaintext). Smart Screenshot Picker stays local:
+Yoink stays free and local-only by default. Two optional analysis features call the Anthropic API using your own API key (stored securely via Windows Credential Manager — never in plaintext):
 
 - **Comment Intelligence** — clusters comment themes, extracts mentioned products, flags notable disagreements
 - **Hook Type classification** — classifies each video's opening style across 9 hook categories
-- **Smart Screenshot Picker** — opt-in grid for selecting which screenshots make the clipboard
 
-All three are off by default. Enable per feature on the setup page. Your API key never leaves your machine except for the Comment Intelligence and Hook Type calls made to Anthropic on your behalf. Yoink itself collects nothing.
+Both are off by default. Enable per feature on the setup page. Your API key never leaves your machine except for the Comment Intelligence and Hook Type calls made to Anthropic on your behalf. Yoink itself collects nothing.
+
+### Optional local feature: Smart Screenshot Picker
+
+Opt-in grid for choosing which screenshots make the clipboard. Stays fully local — no API key, no network calls.
 
 ### Privacy summary
 
@@ -117,7 +120,7 @@ https://ryanbiddy.com/yoink/privacy
 > page) at `https://ryanbiddy.com/yoink/privacy`. It already covers the
 > required points:
 > 1. Core extraction is fully local. Yoink itself collects nothing.
-> 2. Optional AI features (Comment Intelligence, Hook Type, Smart Screenshot Picker) call the Anthropic API with the user's own API key when enabled by the user.
+> 2. Optional AI features (Comment Intelligence, Hook Type) call the Anthropic API with the user's own API key when enabled by the user. Smart Screenshot Picker is opt-in but stays fully local — it does not call Anthropic.
 > 3. The user's API key is stored in Windows Credential Manager and never transmitted anywhere except to Anthropic in the headers of those API calls.
 > 4. No analytics, telemetry, or remote logging.
 
