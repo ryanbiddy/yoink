@@ -52,6 +52,7 @@ if _BIN_DIR.is_dir():
     os.environ["PATH"] = str(_BIN_DIR) + os.pathsep + os.environ.get("PATH", "")
 
 from yt_extract import parse_srt, slugify, fmt_time  # noqa: E402
+import index  # noqa: E402  -- local SQLite library-index module
 
 # --- Constants -------------------------------------------------------------
 HOST = "127.0.0.1"
@@ -681,6 +682,244 @@ _corpus_update_lock = threading.Lock()
 # ->write and silently drop one worker's fields.
 _sidecar_update_lock = threading.Lock()
 _taxonomy_lock = threading.Lock()
+
+# ===========================================================================
+# Library index (Sprint 15) -- SQLite + FTS5. See index.py.
+# ===========================================================================
+INDEX_PATH = DATA_ROOT / "index.db"
+_index_singleton: "index.Index | None" = None
+_index_open_lock = threading.Lock()
+# True from an index.db corruption-recovery (open_or_recover) until the
+# rebuilding backfill scan finishes. Surfaced in /health as index_recovering.
+_index_recovering = False
+
+# Backfill scan progress, polled via GET /index/backfill-status.
+_backfill_state = {"state": "idle", "current": 0, "total": 0}
+_backfill_lock = threading.Lock()
+_backfill_cancel = threading.Event()
+
+
+def _get_index() -> "index.Index":
+    """Process-wide Index handle, opened lazily. A corrupt index.db is
+    quarantined and rebuilt (open_or_recover); recovery sets the
+    _index_recovering flag the backfill clears when it finishes."""
+    global _index_singleton, _index_recovering
+    with _index_open_lock:
+        if _index_singleton is None:
+            idx, recovered = index.Index.open_or_recover(INDEX_PATH)
+            _index_singleton = idx
+            if recovered:
+                _index_recovering = True
+        return _index_singleton
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_hms(value) -> float | None:
+    """Inverse of yt_extract.fmt_time: 'HH:MM:SS' -> seconds. Falls back to a
+    plain numeric coercion so a raw number also works."""
+    if not isinstance(value, str):
+        return _as_float(value)
+    parts = value.strip().split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return None
+    secs = 0
+    for n in nums:
+        secs = secs * 60 + n
+    return float(secs)
+
+
+def _youtube_deep_link(video_id: str, seconds) -> str:
+    """A watch URL deep-linked to a timestamp -- the citations contract."""
+    vid = (video_id or "").strip()
+    try:
+        t = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        t = 0
+    return f"https://youtube.com/watch?v={vid}&t={t}s"
+
+
+def compute_health(sidecar: dict) -> dict:
+    """A per-video extraction health snapshot (A5), computed at extraction
+    time. Stored on the sidecar under `health` and in the index. The
+    comments / hook / comment-intelligence background workers finish *after*
+    this snapshot, so those fields report in-progress status, not the final
+    result."""
+    comments = sidecar.get("comments")
+    comments_status = sidecar.get("comments_status") or "unknown"
+    if isinstance(comments, list) and len(comments) >= 5:
+        comments_health = "ok"
+    elif isinstance(comments, list) and comments:
+        comments_health = "ok -- fewer than 5 comments"
+    elif comments_status == "pending":
+        comments_health = "pending"
+    else:
+        comments_health = "missing"
+    return {
+        "transcript": "ok" if sidecar.get("transcript") else "missing",
+        "screenshots": "ok" if sidecar.get("screenshots") else "missing",
+        "comments": comments_health,
+        "hook": sidecar.get("hook_type_status") or "skipped",
+        "comment_intelligence": sidecar.get("comment_intelligence_status") or "skipped",
+    }
+
+
+def _citations_from_sidecar(sidecar: dict, folder: Path) -> list[dict]:
+    """Build the citation map (A4) from a parsed sidecar: one row per
+    transcript chunk and one per screenshot, each with a timestamped
+    YouTube deep link."""
+    video_id = (sidecar.get("video_id") or "").strip()
+    out: list[dict] = []
+    for i, seg in enumerate(sidecar.get("transcript") or []):
+        if not isinstance(seg, dict):
+            continue
+        start = _as_float(seg.get("start"))
+        out.append({
+            "kind": "transcript_chunk",
+            "seq": i,
+            "timestamp_start": start,
+            "timestamp_end": _as_float(seg.get("end")),
+            "text": seg.get("text"),
+            "file_path": None,
+            "youtube_deep_link": _youtube_deep_link(video_id, start),
+        })
+    for i, shot in enumerate(sidecar.get("screenshots") or []):
+        if not isinstance(shot, dict):
+            continue
+        ts = _parse_hms(shot.get("timestamp"))
+        rel = shot.get("path") or shot.get("filename") or ""
+        out.append({
+            "kind": "screenshot",
+            "seq": i,
+            "timestamp_start": ts,
+            "timestamp_end": None,
+            "text": None,
+            "file_path": str(folder / rel) if rel else None,
+            "youtube_deep_link": _youtube_deep_link(video_id, ts),
+        })
+    return out
+
+
+def _index_yoink(folder: Path, sidecar: dict, corpus_path: Path | None,
+                 sidecar_path: Path) -> bool:
+    """Upsert one yoink + its citations into the library index. Best-effort
+    and idempotent: callers (extraction hook, backfill) must treat a failure
+    as non-fatal. Returns True if the row was indexed."""
+    video_id = (sidecar.get("video_id") or "").strip()
+    if not video_id:
+        # video_id is the yoinks primary key + citations FK -- can't index.
+        log.warning("index skip: no video_id for %s", folder)
+        return False
+    try:
+        content = (corpus_path.read_text(encoding="utf-8")
+                   if corpus_path and corpus_path.exists() else "")
+    except OSError:
+        content = ""
+    record = {
+        "video_id": video_id,
+        "slug": folder.name,
+        "channel": sidecar.get("channel"),
+        "title": sidecar.get("title"),
+        "topic": sidecar.get("topic"),
+        "hook_type": sidecar.get("hook_type"),
+        "yoinked_at": sidecar.get("yoinked_at") or _now_iso(),
+        "corpus_path": str(corpus_path) if corpus_path else "",
+        "sidecar_path": str(sidecar_path),
+        "health_score_json": (
+            json.dumps(sidecar["health"], ensure_ascii=False)
+            if isinstance(sidecar.get("health"), dict) else None
+        ),
+        "metadata_json": json.dumps({
+            "url": sidecar.get("url"),
+            "duration_seconds": sidecar.get("duration_seconds"),
+            "view_count": sidecar.get("view_count"),
+            "like_count": sidecar.get("like_count"),
+            "upload_date": sidecar.get("upload_date"),
+        }, ensure_ascii=False),
+    }
+    idx = _get_index()
+    idx.upsert_yoink(record, content=content)
+    idx.insert_citations(video_id, _citations_from_sidecar(sidecar, folder))
+    return True
+
+
+def _iter_corpus_folders():
+    """Yield (folder, corpus_path) for every yoink folder under DESKTOP_ROOT."""
+    if not DESKTOP_ROOT.exists():
+        return
+    for folder in DESKTOP_ROOT.rglob("*"):
+        if not folder.is_dir():
+            continue
+        corpus = _resolve_corpus_path(folder)
+        if corpus is not None:
+            yield folder, corpus
+
+
+def _run_backfill() -> None:
+    """Index every on-disk yoink folder not already in index.db. Incremental
+    (skips rows already present) and cancellable via _backfill_cancel."""
+    global _index_recovering
+    try:
+        known = _get_index().all_video_ids()
+    except Exception:
+        log.exception("backfill: could not read the index")
+        with _backfill_lock:
+            _backfill_state.update(state="complete")
+        return
+    folders = list(_iter_corpus_folders())
+    with _backfill_lock:
+        _backfill_state.update(state="running", current=0, total=len(folders))
+    done = 0
+    indexed = 0
+    for folder, corpus in folders:
+        if _backfill_cancel.is_set():
+            log.info("backfill cancelled at %d/%d", done, len(folders))
+            break
+        done += 1
+        with _backfill_lock:
+            _backfill_state["current"] = done
+        sidecar_path = folder / f"{folder.name}.json"
+        try:
+            sidecar = (json.loads(sidecar_path.read_text(encoding="utf-8"))
+                       if sidecar_path.exists() else {})
+        except (OSError, json.JSONDecodeError):
+            sidecar = {}
+        video_id = (sidecar.get("video_id") or "").strip()
+        if not video_id or video_id in known:
+            continue  # unindexable, or already indexed (incremental skip)
+        try:
+            if _index_yoink(folder, sidecar, corpus, sidecar_path):
+                indexed += 1
+        except Exception:
+            log.exception("backfill: failed to index %s", folder)
+    with _backfill_lock:
+        _backfill_state["state"] = "complete"
+    _index_recovering = False
+    log.info("backfill complete: scanned %d folder(s), indexed %d new", done, indexed)
+
+
+def _start_backfill_thread() -> None:
+    """Kick the backfill scan off in the background so a missing or
+    freshly-recovered index.db never delays the bind or /health."""
+    _backfill_cancel.clear()
+
+    def _runner():
+        try:
+            _run_backfill()
+        except Exception:
+            log.exception("backfill thread crashed")
+            with _backfill_lock:
+                _backfill_state["state"] = "complete"
+
+    threading.Thread(target=_runner, name="index-backfill", daemon=True).start()
+
 
 # Markers in yoink.md so the comments section can be replaced after the
 # background fetch finishes. HTML comments are invisible in rendered markdown.
@@ -2170,6 +2409,8 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
             "comment_intelligence_status": "not_run",
             "comment_intelligence_error": None,
         }
+        # A5: extraction-time health snapshot, stored on the sidecar.
+        sidecar["health"] = compute_health(sidecar)
         sidecar_path = output_folder / f"{output_folder.name}.json"
         _atomic_write_text(sidecar_path, json.dumps(sidecar, ensure_ascii=False, indent=2))
     except (OSError, TypeError) as e:
@@ -2183,6 +2424,16 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
     # Cheap (one stat per video folder), and re-scanning means a folder the
     # user manually deleted simply drops out of the index next time.
     _regenerate_index()
+
+    # Sprint 15 (A1/A4/A5): incrementally index this yoink + its citation
+    # map + health score in index.db. Best-effort -- a library-index failure
+    # must never fail an otherwise-successful extraction. (This is separate
+    # from _regenerate_index above, which maintains the human-readable
+    # _all-yoinks-index.md file.)
+    try:
+        _index_yoink(output_folder, sidecar, yoink_path, sidecar_path)
+    except Exception as e:
+        log.warning("library index update failed for %s: %s", output_folder, e)
 
     # Build the clipboard / paste version once we know the on-disk md is
     # final. Session adds skip this -- the session corpus is built at
@@ -3801,7 +4052,18 @@ class Handler(BaseHTTPRequestHandler):
         if bare == "/ping" or bare == "/health":
             # Public liveness probe -- intentionally unauthenticated.
             log.info("GET %s from %s -> ok", bare, self.client_address[0])
-            return self._send_json(200, {"ok": True, "version": VERSION})
+            return self._send_json(200, {
+                "ok": True,
+                "version": VERSION,
+                # True while a corrupt index.db is being rebuilt from disk.
+                "index_recovering": _index_recovering,
+            })
+        if bare == "/index/backfill-status":
+            # Public, read-only progress counts (same posture as /health) so
+            # the popup can poll a backfill banner without the token dance.
+            with _backfill_lock:
+                snapshot = dict(_backfill_state)
+            return self._send_json(200, {"ok": True, **snapshot})
         if bare == "/token":
             return self._handle_token()
         # Everything below mutates state or reveals user data -- token-gated.
@@ -4207,6 +4469,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_job_cancel(bare)
         if bare == "/extract":
             return self._handle_extract(body)
+        if bare == "/index/backfill-cancel":
+            _backfill_cancel.set()
+            return self._send_json(200, {"ok": True, "cancelled": True})
         if bare == "/session/start":
             return self._handle_session_start(body)
         if bare == "/session/add":
@@ -4718,6 +4983,11 @@ def main():
 
     _migrate_plaintext_anthropic_key()
     _restore_jobs_from_disk()
+    # Sprint 15: open the library index (quarantining + rebuilding a corrupt
+    # index.db if needed) and backfill it from disk in the background so a
+    # missing index never delays the bind or /health.
+    _get_index()
+    _start_backfill_thread()
 
     # Bind succeeded -- now safe to claim the PID file.
     pid_file = HERE / "server.pid"
