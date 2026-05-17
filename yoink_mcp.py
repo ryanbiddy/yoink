@@ -138,6 +138,25 @@ def get_taxonomy(
     )
 
 
+@mcp.tool(
+    name="get_citation_map",
+    description=(
+        "Return the transcript + screenshot citation map for a saved "
+        "yoink, each entry with a timestamped YouTube deep link."
+    ),
+)
+def get_citation_map(slug: str) -> dict:
+    return yoink_mcp_tools.call_tool("get_citation_map", {"slug": slug})
+
+
+@mcp.tool(
+    name="get_yoink_health",
+    description="Return the per-section extraction health score for a saved yoink.",
+)
+def get_yoink_health(slug: str) -> dict:
+    return yoink_mcp_tools.call_tool("get_yoink_health", {"slug": slug})
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
 

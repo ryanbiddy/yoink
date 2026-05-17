@@ -276,56 +276,46 @@ def cancel_job(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_recent_yoinks(args: dict[str, Any]) -> dict[str, Any]:
+    # Sprint 15: reads the SQLite library index instead of walking the
+    # whole corpus tree on disk. Return shape unchanged.
     limit = _limit_int(args.get("limit"), default=20, low=1, high=100)
-    rows = []
-    for folder, corpus in _iter_yoink_folders() or []:
-        rows.append(_yoink_summary(folder, corpus))
-    rows.sort(key=lambda row: row["_mtime"], reverse=True)
-    public = [
-        {k: v for k, v in row.items() if not k.startswith("_")}
-        for row in rows[:limit]
-    ]
-    return _ok(yoinks=public)
-
-
-def _snippet(text: str, needle: str, span: int = 160) -> str:
-    lowered = text.lower()
-    i = lowered.find(needle.lower())
-    if i < 0:
-        return text[:span].replace("\n", " ").strip()
-    start = max(0, i - span // 2)
-    end = min(len(text), i + len(needle) + span // 2)
-    return text[start:end].replace("\n", " ").strip()
+    yoinks = []
+    for r in _b()._get_index().list_recent(limit):
+        sidecar_path = r.get("sidecar_path") or ""
+        yoinks.append({
+            "slug": r.get("slug"),
+            "title": r.get("title"),
+            "folder": str(Path(sidecar_path).parent) if sidecar_path else None,
+            "yoinked_at": r.get("yoinked_at"),
+        })
+    return _ok(yoinks=yoinks)
 
 
 def search_yoinks(args: dict[str, Any]) -> dict[str, Any]:
+    # Sprint 15: FTS5 keyword search via the library index instead of
+    # read_text()-ing every corpus file. Return shape unchanged
+    # ({slug, title, snippet, score}); optional channel / hook_type filters.
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
         return _err("query required")
     limit = _limit_int(args.get("limit"), default=10, low=1, high=50)
-    terms = [t.lower() for t in re.findall(r"[A-Za-z0-9_'-]+", query) if t]
-    if not terms:
-        return _err("query required")
-    hits = []
-    for folder, corpus in _iter_yoink_folders() or []:
-        try:
-            text = corpus.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        summary = _yoink_summary(folder, corpus)
-        haystack = (summary["title"] + "\n" + text).lower()
-        score = sum(haystack.count(term) for term in terms)
-        if score <= 0:
-            continue
-        first = next((t for t in terms if t in haystack), terms[0])
-        hits.append({
-            "slug": summary["slug"],
-            "title": summary["title"],
-            "snippet": _snippet(text, first),
-            "score": score,
+    channel = args.get("channel")
+    channel = channel.strip() if isinstance(channel, str) and channel.strip() else None
+    hook_type = args.get("hook_type")
+    hook_type = hook_type.strip() if isinstance(hook_type, str) and hook_type.strip() else None
+    rows = _b()._get_index().search(query, limit, channel=channel, hook_type=hook_type)
+    results = []
+    for r in rows:
+        score = r.get("_score")
+        results.append({
+            "slug": r.get("slug"),
+            "title": r.get("title"),
+            "snippet": (r.get("_snippet") or "").strip(),
+            # FTS5 bm25 is lower-is-better; negate so a higher score means a
+            # better match, matching the old term-count score's direction.
+            "score": round(-score, 4) if isinstance(score, (int, float)) else 0.0,
         })
-    hits.sort(key=lambda row: row["score"], reverse=True)
-    return _ok(results=hits[:limit])
+    return _ok(results=results)
 
 
 def get_yoink_corpus(args: dict[str, Any]) -> dict[str, Any]:
@@ -342,12 +332,78 @@ def get_yoink_corpus(args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(video_id, str) or not video_id.strip():
         video_id = None
     video_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else None
+    # Sprint 15: include the citation map alongside the markdown. Optional
+    # field -- markdown-only consumers are unaffected.
+    citations: list[dict[str, Any]] = []
+    if video_id:
+        try:
+            citations = _b()._get_index().get_citations(video_id)
+        except Exception:
+            citations = []
     return _ok(
         corpus_md=md,
         folder=str(folder),
         video_id=video_id,
         video_url=video_url,
+        citations=citations,
     )
+
+
+def get_citation_map(args: dict[str, Any]) -> dict[str, Any]:
+    """Return the transcript + screenshot citation map for a saved yoink,
+    each entry carrying a timestamped YouTube deep link."""
+    slug = args.get("slug")
+    folder, corpus = _find_yoink(slug)
+    if not folder or not corpus:
+        return _err("yoink not found")
+    video_id = _read_sidecar(folder).get("video_id")
+    if not isinstance(video_id, str) or not video_id.strip():
+        return _err("yoink has no video_id")
+    transcript: list[dict[str, Any]] = []
+    screenshots: list[dict[str, Any]] = []
+    for r in _b()._get_index().get_citations(video_id):
+        if r.get("kind") == "screenshot":
+            screenshots.append({
+                "seq": r.get("seq"),
+                "timestamp": r.get("timestamp_start"),
+                "file_path": r.get("file_path"),
+                "deep_link": r.get("youtube_deep_link"),
+            })
+        else:
+            transcript.append({
+                "seq": r.get("seq"),
+                "timestamp_start": r.get("timestamp_start"),
+                "timestamp_end": r.get("timestamp_end"),
+                "text": r.get("text"),
+                "deep_link": r.get("youtube_deep_link"),
+            })
+    return _ok(
+        video_id=video_id,
+        transcript_citations=transcript,
+        screenshot_citations=screenshots,
+    )
+
+
+def get_yoink_health(args: dict[str, Any]) -> dict[str, Any]:
+    """Return the per-section extraction health score for a saved yoink."""
+    slug = args.get("slug")
+    folder, corpus = _find_yoink(slug)
+    if not folder or not corpus:
+        return _err("yoink not found")
+    sidecar = _read_sidecar(folder)
+    video_id = sidecar.get("video_id")
+    health = None
+    if isinstance(video_id, str) and video_id.strip():
+        try:
+            health = _b()._get_index().get_health(video_id)
+        except Exception:
+            health = None
+    if health is None:
+        # Fall back to the sidecar's own snapshot if the index lacks a row.
+        health = sidecar.get("health")
+    if not isinstance(health, dict):
+        return _err("no health data for this yoink")
+    return _ok(video_id=video_id or None, health=health)
 
 
 def analyze_comments_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -503,14 +559,22 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     ),
     "search_yoinks": ToolSpec(
         name="search_yoinks",
-        description="Keyword search across saved Yoink markdown corpora.",
+        description="Full-text search across saved Yoink corpora.",
         input_schema=_schema({
             "query": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+            "channel": {
+                "type": "string",
+                "description": "Filter results to one channel. Optional.",
+            },
+            "hook_type": {
+                "type": "string",
+                "description": "Filter results to one hook type. Optional.",
+            },
         }, ["query"]),
         handler=search_yoinks,
-        # Reads every corpus file fully on every call; rate-limit so an agent
-        # calling it in a tight loop can't pin the disk.
+        # Backed by the SQLite FTS5 index; rate-limited anyway so an agent
+        # loop can't hammer it.
         rate_limiter=_RateLimiter(30),
     ),
     "get_yoink_corpus": ToolSpec(
@@ -576,6 +640,27 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             },
         }),
         handler=get_taxonomy,
+    ),
+    "get_citation_map": ToolSpec(
+        name="get_citation_map",
+        description=(
+            "Return the transcript + screenshot citation map for a saved "
+            "yoink, each entry with a timestamped YouTube deep link."
+        ),
+        input_schema=_schema({
+            "slug": {"type": "string", "description": "Folder slug of the saved yoink."},
+        }, ["slug"]),
+        handler=get_citation_map,
+        rate_limiter=_RateLimiter(60),
+    ),
+    "get_yoink_health": ToolSpec(
+        name="get_yoink_health",
+        description="Return the per-section extraction health score for a saved yoink.",
+        input_schema=_schema({
+            "slug": {"type": "string", "description": "Folder slug of the saved yoink."},
+        }, ["slug"]),
+        handler=get_yoink_health,
+        rate_limiter=_RateLimiter(60),
     ),
 }
 
