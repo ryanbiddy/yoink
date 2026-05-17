@@ -293,7 +293,14 @@ class Index:
         match = _fts_query(query)
         if not match:
             return []
-        sql = ("SELECT y.* FROM yoinks_fts f "
+        # snippet() column index 6 == the `content` column of yoinks_fts
+        # (0:video_id 1:slug 2:channel 3:title 4:topic 5:hook_type 6:content).
+        # Each result row carries `_snippet` (a match excerpt) and `_score`
+        # (bm25; lower is a better match) alongside the yoinks columns.
+        sql = ("SELECT y.*, "
+               "snippet(yoinks_fts, 6, '', '', '…', 12) AS _snippet, "
+               "bm25(yoinks_fts) AS _score "
+               "FROM yoinks_fts f "
                "JOIN yoinks y ON y.video_id = f.video_id "
                "WHERE yoinks_fts MATCH ? ")
         params: list = [match]
@@ -461,7 +468,8 @@ class Index:
         clauses: list[str] = []
         params: list = []
         if channel:
-            clauses.append("channel = ?")
+            # Case-insensitive to match the pre-index taxonomy query.
+            clauses.append("channel = ? COLLATE NOCASE")
             params.append(channel)
         if hook_type:
             clauses.append("hook_type = ?")
