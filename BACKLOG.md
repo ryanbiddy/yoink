@@ -172,6 +172,26 @@ Tier-1 small wins first (Codex's review reordering: low-risk, high-leverage). La
 - **Rationale:** Given citations and entity graph (Sprint 16), the next step is "this point also appears in video Y at [12:34]."
 - **Trigger:** Sprint 16 ships and find_mentions sees real use.
 
+### Entity sentiment scoring
+- **Destination:** Sprint 16.5 / v2.1
+- **Rationale:** Sprint 16 ships entity extraction without sentiment. Adding sentiment per mention enables "how do creators talk about X?" queries.
+- **Trigger:** Sprint 16 ships and find_mentions sees real use.
+
+### Temporal trends + co-occurrence on entities
+- **Destination:** Sprint 16.5 / v2.1
+- **Rationale:** With entity_mentions accumulating, surface trend curves and co-occurrence patterns. New tools: entity_trend(entity), entity_cooccurrence(entity_a, entity_b).
+- **Trigger:** ≥100 entity mentions in the average user's index.
+
+### Cross-creator citation graph
+- **Destination:** v2.5 (originally bundled with A2 in strategy brief; pulled out per build-chat scoping)
+- **Rationale:** Identifying when creators reference each other requires creator-disambiguation logic that's its own non-trivial system.
+- **Trigger:** v2.5 cycle, after entity graph has accumulated meaningful data.
+
+### User-correctable entity disambiguation
+- **Destination:** Sprint 17.5 (after A3's correction-UI pattern is established)
+- **Rationale:** Automatic clustering will miss edge cases ("Claude" the AI vs "Claude" the person; "React" the framework vs the verb). A3's hook-type correction affordance is the template for entity corrections.
+- **Trigger:** Sprint 17 ships and exposes the correction-UI pattern.
+
 ### Taxonomy retention / export (UX surface)
 - **Destination:** v2.1 (new entry per Codex's review)
 - **Rationale:** HTTP `/taxonomy` and MCP `get_taxonomy` now exist and are backed by SQLite. This remaining item covers the UX side: setup.html taxonomy viewer, CSV export button, and retention controls.

@@ -6,7 +6,7 @@ Transports: stdio, plus an experimental authenticated local HTTP JSON-RPC helper
 
 ## Overview
 
-Yoink exposes 12 MCP tools covering extraction, playlist jobs, search, corpus retrieval, citation maps, health scores, Comment Intelligence, Hook Type, and hook taxonomy. The tool implementation lives in `yoink_mcp_tools.py`; stdio (`yoink_mcp.py`) is the officially supported MCP transport, and the local HTTP JSON-RPC helper (`server.py` under `/mcp/v1`) wraps the same registry for clients that can use direct POST calls.
+Yoink exposes 13 MCP tools covering extraction, playlist jobs, search, corpus retrieval, citation maps, health scores, Comment Intelligence, Hook Type, hook taxonomy, and entity mentions. The tool implementation lives in `yoink_mcp_tools.py`; stdio (`yoink_mcp.py`) is the officially supported MCP transport, and the local HTTP JSON-RPC helper (`server.py` under `/mcp/v1`) wraps the same registry for clients that can use direct POST calls.
 
 ## Compatibility matrix
 
@@ -498,6 +498,50 @@ Errors:
 
 Rate limit: 60 calls/minute per process.
 
+### find_mentions
+
+Find every yoink in your corpus that mentions a specific entity: person, tool, product, topic, company, or other named thing.
+
+Parameters:
+
+```json
+{
+  "entity": "Claude",
+  "limit": 50
+}
+```
+
+`entity` is required. `name` is accepted as an alias by the backend. `limit` is optional, defaults to 50, and is clamped to 1-200.
+
+Return shape:
+
+```json
+{
+  "ok": true,
+  "mentions": [
+    {
+      "video_id": "abc123DEF45",
+      "slug": "video-slug",
+      "title": "Video title",
+      "channel": "Example Channel",
+      "source": "transcript",
+      "timestamp": 12.5,
+      "context": "Claude is the AI we'll use for this workflow.",
+      "deep_link": "https://youtube.com/watch?v=abc123DEF45&t=12s"
+    }
+  ]
+}
+```
+
+Entities are extracted automatically from each yoink's transcript using the configured Anthropic API key. Matching is case-insensitive and punctuation-tolerant through the normalized entity key. If no Anthropic key is set, entity extraction is skipped at yoink time; older yoinks without entity rows will not appear in results until re-yoinked.
+
+Errors:
+
+- `{ "ok": false, "error": "entity name (string) is required" }`
+- `{ "ok": false, "error": "rate limit exceeded: max 60/minute" }`
+
+Rate limit: 60 calls/minute per process.
+
 ## Rate limits and abuse mitigations
 
 - `yoink_video`: 5 calls/minute per process.
@@ -508,6 +552,7 @@ Rate limit: 60 calls/minute per process.
 - `search_yoinks`: 30 calls/minute per process.
 - `get_citation_map`: 60 calls/minute per process.
 - `get_yoink_health`: 60 calls/minute per process.
+- `find_mentions`: 60 calls/minute per process.
 - Other read-only tools (`get_yoink_corpus`, `get_job_status`, `get_taxonomy`) are not rate-limited.
 
 Rate-limit errors return friendly tool payloads, for example:

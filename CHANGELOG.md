@@ -10,11 +10,14 @@ The "YouTube layer for any AI agent" release. Three adoption funnels: Chrome ext
 
 ### Added
 
-- **MCP server** with 12 tools (`yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`, `get_taxonomy`, `get_citation_map`, `get_yoink_health`). Stdio transport officially tested with Claude Desktop and Cursor. Local HTTP JSON-RPC transport available, marked experimental.
+- **MCP server** with 13 tools (`yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`, `get_taxonomy`, `get_citation_map`, `get_yoink_health`, `find_mentions`). Stdio transport officially tested with Claude Desktop and Cursor. Local HTTP JSON-RPC transport available, marked experimental.
 - **Library Index (SQLite FTS5).** `%LOCALAPPDATA%\Yoink\index.db` replaces scan-based search/recent/get-taxonomy code paths where indexed consumers need fast library access. First boot backfills existing corpora; subsequent yoinks update incrementally.
 - **Migration framework.** `schema_version` table plus numbered `migrations/NNNN_*.sql` scripts for future schema changes.
 - **Citation map.** Pre-computed at extraction/index time; new MCP tool `get_citation_map(slug)` returns transcript and screenshot citations with YouTube deep links.
 - **Health score.** Sidecar/index health snapshot for transcript, screenshots, comments, Hook Type, and Comment Intelligence; new MCP tool `get_yoink_health(slug)` returns the dict used by popup Recent health icons.
+- **Entity extraction from transcripts.** Optional BYO-Anthropic-key worker extracts people, tools, products, topics, companies, and other named entities from new yoinks when AI features are enabled.
+- **Entity graph tables.** Migration 0002 adds `entities` and `entity_mentions` tables to `index.db`, keyed by normalized entity name/type and linked back to `yoinks.video_id`.
+- **MCP `find_mentions(entity, limit)` tool.** Agents can ask where a person/tool/product/topic/company appears across the local corpus; results include title, channel, timestamp, context, and YouTube deep link.
 - **Yoink Operator Skill** - drop-in `SKILL.md` (agentskills.io open standard) covering identity, default chat, hook-autopsy tweet mode, and citation discipline. Distributed via Claude Code plugin, OpenClaw ClawHub, Hermes URL install, and copyable system prompt for everywhere else.
 - **Playlist Mode.** Paste a YouTube playlist URL, yoink up to 10 videos per job. Async job system with live progress, cancellation, and partial-failure tolerance. Combined corpus (text-only) to clipboard; per-video corpora with screenshots on disk.
 - **Comment Intelligence.** Optional Anthropic-powered analysis of comment threads. Three structured sections appended per video: top themes, mentioned products/tools, notable disagreements.
@@ -25,6 +28,8 @@ The "YouTube layer for any AI agent" release. Three adoption funnels: Chrome ext
 - **Job persistence across helper restarts.** `/jobs` state survives helper restart via `%LOCALAPPDATA%\Yoink\index.db`. In-flight jobs are marked failed with `error="server restarted"`; users restart them manually.
 - **Hook Type taxonomy capture.** Every successful classification upserts into the local `taxonomy` table in `index.db` (deduplicated by video ID) for v2.0 dataset queries via `GET /taxonomy` and the `get_taxonomy` MCP tool.
 - **jobs.json / taxonomy.json migration.** Existing file-based persistence is imported into `index.db` on first boot and the old files are renamed with `.migrated` suffixes.
+- **Lazy entity backfill policy.** Existing yoinks do not receive retroactive entity rows; re-yoink an older video to populate entities for it.
+- **Entity graph scope guard.** Mention sentiment, temporal trends, co-occurrence, and cross-creator citation graph are deferred to Sprint 16.5+.
 - **Job recovery on popup reopen.** If you close the popup mid-playlist, reopening it resumes from the running job state via `GET /jobs`.
 - **Polling resilience.** Helper-disconnect banner appears after 5 seconds of failed polls. After 30 seconds, the setup guide auto-opens in a new tab (rate-limited to once per 5 minutes across popup sessions). Recovery is automatic when the helper comes back.
 - **Active-playlist pill.** When a playlist is running and the user switches to single-video mode, a persistent pill shows playlist progress. Click to return to the playlist view.

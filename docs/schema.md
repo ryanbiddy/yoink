@@ -1,8 +1,8 @@
 # Yoink Library Index Schema
 
-Status: implemented in Sprint 15
+Status: implemented through Sprint 16
 Database: `%LOCALAPPDATA%\Yoink\index.db`
-Scope: SQLite library index, FTS5 search, job/taxonomy migration, citations, health scores, and backfill.
+Scope: SQLite library index, FTS5 search, job/taxonomy migration, citations, health scores, entity graph, and backfill.
 
 ## Overview
 
@@ -14,6 +14,7 @@ The index replaces or absorbs these older persistence patterns:
 - `%LOCALAPPDATA%\Yoink\jobs.json` for persisted job records.
 - `%LOCALAPPDATA%\Yoink\taxonomy.json` for Hook Type taxonomy capture.
 - Ad hoc citation reconstruction from markdown when an agent needs timestamped deep links.
+- Ad hoc entity lookup across markdown when an agent needs "where did people mention X?" results.
 
 The corpus markdown, sidecar JSON, screenshots, transcript files, and thumbnails still remain on disk in the Yoink output root. `index.db` points at those files; it does not replace the user-visible corpus folders.
 
@@ -182,6 +183,87 @@ MCP surfaces:
 - `get_citation_map(slug)` returns transcript citations and screenshot citations separately.
 - `get_yoink_corpus(slug)` also includes the raw citations list as an additive optional field.
 
+### Entity graph (Sprint 16, migration 0002)
+
+Sprint 16 adds a minimal entity graph for agent lookup. Entity extraction runs on new yoinks when the user has a configured Anthropic API key and entity extraction is enabled through the AI-feature path. Existing yoinks are not retroactively backfilled in Sprint 16; re-yoinking an older video is the way to populate entity rows for it.
+
+Sentiment is intentionally omitted in this version. Mention sentiment, temporal trends, co-occurrence, cross-creator citation graph, and user-correctable disambiguation are Sprint 16.5 / Sprint 17.5 follow-ups.
+
+Disambiguation is automatic in Sprint 16: names cluster by `name_normalized` plus `type`. There is no user-correctable override yet. That means "Claude" the AI tool and "Claude" the person can collide unless the extractor assigns different types.
+
+Sidecar status:
+
+- Per-video sidecars include `entity_extraction_status`.
+- Expected values are `completed`, `failed`, or `skipped`.
+- `skipped` is used when no Anthropic API key is available or entity extraction is otherwise not enabled.
+- A failed API call or parse failure should mark the sidecar `failed` and log a short reason without leaking keys.
+
+#### `entities`
+
+Canonical entity table. One row represents an entity name/type pair.
+
+```sql
+CREATE TABLE entities (
+    entity_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    name_normalized TEXT NOT NULL,
+    type TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    mention_count INTEGER DEFAULT 0,
+    UNIQUE (name_normalized, type)
+);
+```
+
+| Column | Type | Nullability | Stores |
+|---|---|---|---|
+| `entity_id` | INTEGER PRIMARY KEY AUTOINCREMENT | required | Internal entity ID. |
+| `name` | TEXT | required | Display name returned by extraction, preserving readable casing. |
+| `name_normalized` | TEXT | required | Lowercased, punctuation/whitespace-stripped matching key. |
+| `type` | TEXT | required | Python-enforced type: `person`, `tool`, `product`, `topic`, `company`, or `other`. |
+| `first_seen` | TEXT | required | First timestamp this entity was inserted into the index. |
+| `last_seen` | TEXT | required | Most recent timestamp this entity was mentioned. |
+| `mention_count` | INTEGER | optional default `0` | Aggregate mention count across indexed yoinks. |
+
+Uniqueness:
+
+- `UNIQUE (name_normalized, type)` dedupes entities across videos.
+- The backend can `INSERT OR IGNORE`, then `SELECT` by `(name_normalized, type)` to get the canonical `entity_id`.
+- There is intentionally no SQL `CHECK` constraint on `type`; Python enforces the allowed values.
+
+#### `entity_mentions`
+
+Mention table linking entities to videos and timestamped context.
+
+```sql
+CREATE TABLE entity_mentions (
+    mention_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL,
+    video_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    timestamp REAL,
+    context TEXT,
+    FOREIGN KEY (entity_id) REFERENCES entities(entity_id) ON DELETE CASCADE,
+    FOREIGN KEY (video_id) REFERENCES yoinks(video_id) ON DELETE CASCADE
+);
+```
+
+| Column | Type | Nullability | Stores |
+|---|---|---|---|
+| `mention_id` | INTEGER PRIMARY KEY AUTOINCREMENT | required | Internal mention ID. |
+| `entity_id` | INTEGER | required | Foreign key to `entities.entity_id`. |
+| `video_id` | TEXT | required | Foreign key to `yoinks.video_id`. |
+| `source` | TEXT | required | Source surface for the mention, initially `transcript`. |
+| `timestamp` | REAL | nullable | Mention timestamp in seconds, when the extractor can tie it to transcript time. |
+| `context` | TEXT | nullable | Short local context string around the mention. |
+
+Query behavior:
+
+- MCP `find_mentions(entity, limit)` normalizes the input name, joins `entities`, `entity_mentions`, and `yoinks`, and returns newest mention rows.
+- Results include `video_id`, `slug`, `title`, `channel`, `source`, `timestamp`, `context`, and a YouTube `deep_link`.
+- Sprint 16 orders mentions by `entity_mentions.mention_id DESC`, which approximates newest indexed mentions first.
+- Lazy backfill: rows exist only for yoinks processed after Sprint 16 entity extraction lands.
+
 ## Indexes
 
 | Index | Table | Supports |
@@ -194,6 +276,10 @@ MCP surfaces:
 | `idx_taxonomy_hook_type` | `taxonomy(hook_type)` | Hook Type taxonomy filters. |
 | `idx_citations_video_id` | `citations(video_id, seq)` | Citation-map lookup for one video. |
 | `idx_citations_unique` | `citations(video_id, kind, seq)` | Idempotent citation regeneration. |
+| `idx_entities_normalized` | `entities(name_normalized)` | `find_mentions` lookup by normalized entity name. |
+| `idx_entities_type` | `entities(type)` | Future filters by entity type. |
+| `idx_entity_mentions_entity` | `entity_mentions(entity_id)` | Mentions lookup for one entity. |
+| `idx_entity_mentions_video` | `entity_mentions(video_id)` | Cleanup/join lookup for one video. |
 
 The FTS5 table maintains its own search index internally.
 

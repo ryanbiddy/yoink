@@ -2,7 +2,7 @@
 
 Use this as the one pre-launch checklist. Run on a clean Windows user profile if possible, then repeat the core extraction subset on the normal dev machine.
 
-Total checkpoints: 91.
+Total checkpoints: 95.
 
 ## 1. Core extraction - single-video v1 regression
 
@@ -40,90 +40,94 @@ Total checkpoints: 91.
 26. [ ] Re-trigger Hook Type on the same video - success: taxonomy record is updated in place, not duplicated.
 27. [ ] Corrupt `taxonomy.json` and restart/trigger Hook Type - success: helper logs warning, starts fresh, and does not crash.
 28. [ ] Query taxonomy through HTTP and MCP - success: `/taxonomy`, MCP `get_taxonomy`, `channel`, `hook_type`, and combined filters return newest-first rows without duplicates.
+29. [ ] Yoink a video with Anthropic key set - success: entities populate in `index.db` (verify by `SELECT COUNT(*) FROM entities` or via `find_mentions`).
+30. [ ] Yoink a video without Anthropic key - success: worker skips silently, sidecar shows `entity_extraction_status: "skipped"`, no errors logged.
+31. [ ] Call `find_mentions("Claude")` via MCP stdio - success: returns mention rows if any prior yoink mentioned Claude.
+32. [ ] Call `find_mentions` on a non-existent entity - success: returns empty mentions list, no error.
 
 ## 4. Setup / settings / key handling
 
-29. [ ] First-run install path - success: extension opens `setup.html?source=install`, shows intro/install/verify/try steps.
-30. [ ] Offline path - success: stop helper, click Yoink, setup opens at verify step and does not require user to understand Python.
-31. [ ] Installer download gate before publication - success: if `INSTALLER_PUBLISHED=false`, download button cannot send users to a 404.
-32. [ ] Installer download gate after publication - success: after flip, button downloads the exact release asset.
-33. [ ] Clear key button - success: confirmation appears, key clears from Credential Manager/keyring, input empties, status says key not set.
-34. [ ] Keyring fresh install - success: with no settings key and no credential entry, settings works and reports `anthropic_key_set=false`.
-35. [ ] Keyring migration install - success: a legacy plaintext `anthropic_key` in settings.json migrates to keyring and is removed from settings.json on startup.
-36. [ ] Missing/unavailable keyring in dev mode - success: helper starts, but saving a non-empty key fails clearly instead of falling back to plaintext.
-37. [ ] Toggle CI, Hook Type, and Smart Screenshot Picker - success: settings persist across helper restart and popup/setup reload.
-38. [ ] AI cost estimator - success: with a key present, CI/Hook toggles show the correct per-video estimate from `/settings/pricing`; with no key or no paid toggles it stays hidden.
-39. [ ] Deep link to `setup.html?source=popup#mcp-settings` - success: page scrolls to Agent Integration and is not hijacked by Step 4 auto-scroll.
+33. [ ] First-run install path - success: extension opens `setup.html?source=install`, shows intro/install/verify/try steps.
+34. [ ] Offline path - success: stop helper, click Yoink, setup opens at verify step and does not require user to understand Python.
+35. [ ] Installer download gate before publication - success: if `INSTALLER_PUBLISHED=false`, download button cannot send users to a 404.
+36. [ ] Installer download gate after publication - success: after flip, button downloads the exact release asset.
+37. [ ] Clear key button - success: confirmation appears, key clears from Credential Manager/keyring, input empties, status says key not set.
+38. [ ] Keyring fresh install - success: with no settings key and no credential entry, settings works and reports `anthropic_key_set=false`.
+39. [ ] Keyring migration install - success: a legacy plaintext `anthropic_key` in settings.json migrates to keyring and is removed from settings.json on startup.
+40. [ ] Missing/unavailable keyring in dev mode - success: helper starts, but saving a non-empty key fails clearly instead of falling back to plaintext.
+41. [ ] Toggle CI, Hook Type, and Smart Screenshot Picker - success: settings persist across helper restart and popup/setup reload.
+42. [ ] AI cost estimator - success: with a key present, CI/Hook toggles show the correct per-video estimate from `/settings/pricing`; with no key or no paid toggles it stays hidden.
+43. [ ] Deep link to `setup.html?source=popup#mcp-settings` - success: page scrolls to Agent Integration and is not hijacked by Step 4 auto-scroll.
 
 ## 5. Smart Screenshot Picker
 
-40. [ ] Enable picker and yoink a normal video - success: popup shows thumbnail grid after extraction.
-41. [ ] Pick zero screenshots - success: clipboard corpus remains valid text and UI gives a clear empty-selection state.
-42. [ ] Pick one screenshot - success: clipboard includes exactly that screenshot.
-43. [ ] Pick many screenshots - success: UI remains responsive and clipboard respects configured max/context constraints.
-44. [ ] Serve thumbnails through `/file` - success: authenticated image URLs load; invalid token, outside-root path, non-image, bad magic bytes, and >10 MB file are rejected.
-45. [ ] Run playlist with picker enabled - success: playlist clipboard remains text-only and no picker is shown.
+44. [ ] Enable picker and yoink a normal video - success: popup shows thumbnail grid after extraction.
+45. [ ] Pick zero screenshots - success: clipboard corpus remains valid text and UI gives a clear empty-selection state.
+46. [ ] Pick one screenshot - success: clipboard includes exactly that screenshot.
+47. [ ] Pick many screenshots - success: UI remains responsive and clipboard respects configured max/context constraints.
+48. [ ] Serve thumbnails through `/file` - success: authenticated image URLs load; invalid token, outside-root path, non-image, bad magic bytes, and >10 MB file are rejected.
+49. [ ] Run playlist with picker enabled - success: playlist clipboard remains text-only and no picker is shown.
 
 ## 6. MCP - stdio and HTTP
 
-46. [ ] Copy Claude Desktop stdio config from setup - success: command points to installed `python.exe` and `yoink_mcp.py`.
-47. [ ] Smoke-test Claude Desktop stdio - success: client lists all 12 tools and `list_recent_yoinks` works.
-48. [ ] Smoke-test Cursor stdio - success: client lists all 12 tools and `search_yoinks` works.
-49. [ ] Call `yoink_video` through MCP - success: returns `ok`, `slug`, `folder`, `corpus_md`, and screenshots.
-50. [ ] Call `yoink_playlist` then `get_job_status` - success: job appears in `/jobs` and completes/cancels consistently.
-51. [ ] Call `get_yoink_corpus` on a sidecar-backed yoink - success: returns `video_id` and `video_url`.
-52. [ ] Call `get_yoink_corpus` on legacy/missing sidecar - success: returns `video_id:null` and `video_url:null` without crashing.
-53. [ ] Call `get_taxonomy` through MCP - success: no-arg, `channel`, `hook_type`, and combined filters match `/taxonomy`.
-54. [ ] Call `get_citation_map` through MCP - success: `transcript_citations` and `screenshot_citations` are both non-empty for a yoink with screenshots.
-55. [ ] Call `get_yoink_health` through MCP - success: returns a dict with five status fields, none null.
-56. [ ] Trigger MCP rate limits - success: extraction tools fail friendly after 5/minute, AI tools after 10/minute, and citation/health tools after 60/minute.
-57. [ ] Smoke-test HTTP JSON-RPC helper - success: token-gated initialize/tools/list/tools/call return MCP-style envelopes.
+50. [ ] Copy Claude Desktop stdio config from setup - success: command points to installed `python.exe` and `yoink_mcp.py`.
+51. [ ] Smoke-test Claude Desktop stdio - success: client lists all 13 tools and `list_recent_yoinks` works.
+52. [ ] Smoke-test Cursor stdio - success: client lists all 13 tools and `search_yoinks` works.
+53. [ ] Call `yoink_video` through MCP - success: returns `ok`, `slug`, `folder`, `corpus_md`, and screenshots.
+54. [ ] Call `yoink_playlist` then `get_job_status` - success: job appears in `/jobs` and completes/cancels consistently.
+55. [ ] Call `get_yoink_corpus` on a sidecar-backed yoink - success: returns `video_id` and `video_url`.
+56. [ ] Call `get_yoink_corpus` on legacy/missing sidecar - success: returns `video_id:null` and `video_url:null` without crashing.
+57. [ ] Call `get_taxonomy` through MCP - success: no-arg, `channel`, `hook_type`, and combined filters match `/taxonomy`.
+58. [ ] Call `get_citation_map` through MCP - success: `transcript_citations` and `screenshot_citations` are both non-empty for a yoink with screenshots.
+59. [ ] Call `get_yoink_health` through MCP - success: returns a dict with five status fields, none null.
+60. [ ] Trigger MCP rate limits - success: extraction tools fail friendly after 5/minute, AI tools after 10/minute, and citation/health tools after 60/minute.
+61. [ ] Smoke-test HTTP JSON-RPC helper - success: token-gated initialize/tools/list/tools/call return MCP-style envelopes.
 
 ## 7. XSS / security
 
-58. [ ] Yoink a video with hostile title/description/comment text containing HTML/script - success: popup/setup/picker render text safely; no script executes.
-59. [ ] Try malicious `/file` paths - success: `..`, relative paths, symlink escapes, outside-root files, and wrong magic bytes are rejected.
-60. [ ] Try unauthenticated mutating requests - success: all POST routes and private GET routes return 403 before reading body.
-61. [ ] Try `/token` from a normal web origin - success: browser CORS/preflight blocks or server returns forbidden; token is not exposed.
-62. [ ] Confirm token is never in query strings - success: network history shows `X-Yoink-Token` header only.
-63. [ ] Check logs after key operations - success: no Anthropic key, token, or full auth header appears in `server.log`.
+62. [ ] Yoink a video with hostile title/description/comment text containing HTML/script - success: popup/setup/picker render text safely; no script executes.
+63. [ ] Try malicious `/file` paths - success: `..`, relative paths, symlink escapes, outside-root files, and wrong magic bytes are rejected.
+64. [ ] Try unauthenticated mutating requests - success: all POST routes and private GET routes return 403 before reading body.
+65. [ ] Try `/token` from a normal web origin - success: browser CORS/preflight blocks or server returns forbidden; token is not exposed.
+66. [ ] Confirm token is never in query strings - success: network history shows `X-Yoink-Token` header only.
+67. [ ] Check logs after key operations - success: no Anthropic key, token, or full auth header appears in `server.log`.
 
 ## 8. Recovery + resilience
 
-64. [ ] Stop helper while popup is open - success: disconnect banner appears after grace period and buttons do not look active.
-65. [ ] Leave helper offline for the auto-open threshold - success: setup opens once, then rate-limit prevents repeated tab spam.
-66. [ ] Restart helper while popup is open - success: popup reconnects, banner clears, status dots turn green.
-67. [ ] Kill helper mid-playlist and restart - success: `/jobs` returns the job as `failed` with `error="server restarted"` from `index.db`.
-68. [ ] Confirm last-yoink affordance for playlist completion - success: popup surfaces recent completed playlist job.
-69. [ ] Confirm last-yoink affordance for single-video completion - success: popup surfaces recent single job after `/extract`.
-70. [ ] Confirm active-playlist pill while switching modes - success: pill shows status and click returns to playlist view.
-71. [ ] Cancel an active backfill - success: `/index/backfill-cancel` returns `cancelled:true`, banner clears when status becomes complete, and already-indexed yoinks remain searchable.
+68. [ ] Stop helper while popup is open - success: disconnect banner appears after grace period and buttons do not look active.
+69. [ ] Leave helper offline for the auto-open threshold - success: setup opens once, then rate-limit prevents repeated tab spam.
+70. [ ] Restart helper while popup is open - success: popup reconnects, banner clears, status dots turn green.
+71. [ ] Kill helper mid-playlist and restart - success: `/jobs` returns the job as `failed` with `error="server restarted"` from `index.db`.
+72. [ ] Confirm last-yoink affordance for playlist completion - success: popup surfaces recent completed playlist job.
+73. [ ] Confirm last-yoink affordance for single-video completion - success: popup surfaces recent single job after `/extract`.
+74. [ ] Confirm active-playlist pill while switching modes - success: pill shows status and click returns to playlist view.
+75. [ ] Cancel an active backfill - success: `/index/backfill-cancel` returns `cancelled:true`, banner clears when status becomes complete, and already-indexed yoinks remain searchable.
 
 ## 9. Index foundation
 
-72. [ ] Boot helper with no `index.db` - success: backfill scan runs, `/index/backfill-status` reports complete, and all on-disk corpora appear in Recent yoinks or indexed search surfaces.
-73. [ ] Boot helper with corrupt `index.db` (truncate to 0 bytes) - success: file is renamed to `index.db.corrupt-<timestamp>`, fresh backfill runs, recovers all yoinks, and `/health` reports `index_recovering:true` during recovery.
-74. [ ] Boot helper with `jobs.json` and `taxonomy.json` present - success: both migrate into `index.db`, `.migrated` files appear, and no data is lost.
-75. [ ] Yoink three new videos - success: each appears incrementally in Recent yoinks or indexed search surfaces without a full re-scan.
-76. [ ] Search yoinks against a corpus of 50+ - success: returns in under 500ms.
+76. [ ] Boot helper with no `index.db` - success: backfill scan runs, `/index/backfill-status` reports complete, and all on-disk corpora appear in Recent yoinks or indexed search surfaces.
+77. [ ] Boot helper with corrupt `index.db` (truncate to 0 bytes) - success: file is renamed to `index.db.corrupt-<timestamp>`, fresh backfill runs, recovers all yoinks, and `/health` reports `index_recovering:true` during recovery.
+78. [ ] Boot helper with `jobs.json` and `taxonomy.json` present - success: both migrate into `index.db`, `.migrated` files appear, and no data is lost.
+79. [ ] Yoink three new videos - success: each appears incrementally in Recent yoinks or indexed search surfaces without a full re-scan.
+80. [ ] Search yoinks against a corpus of 50+ - success: returns in under 500ms.
 
 ## 10. Windows path handling
 
-77. [ ] OneDrive Desktop redirection - success: Yoink output root resolves to the actual known Desktop path, not a guessed `%USERPROFILE%\Desktop`.
-78. [ ] Video title is a Windows reserved name (`CON`, `AUX`, `LPT1`) - success: folder slug is safe and extraction completes.
-79. [ ] Very long video title - success: folder/file creation succeeds or fails gracefully without path traversal.
-80. [ ] Desktop on network/synced drive - success: extraction either completes or reports a clear file-write error.
-81. [ ] Start Menu shortcuts - success: Yoink Server, Stop Yoink Server, Yoink folder, and Uninstall Yoink entries work.
-82. [ ] Auto-start on Windows login - success: server starts hidden after sign-in and popup is green within 30 seconds.
-83. [ ] Uninstall - success: files, Start Menu shortcuts, Run key, and helper process are removed/cleared cleanly.
+81. [ ] OneDrive Desktop redirection - success: Yoink output root resolves to the actual known Desktop path, not a guessed `%USERPROFILE%\Desktop`.
+82. [ ] Video title is a Windows reserved name (`CON`, `AUX`, `LPT1`) - success: folder slug is safe and extraction completes.
+83. [ ] Very long video title - success: folder/file creation succeeds or fails gracefully without path traversal.
+84. [ ] Desktop on network/synced drive - success: extraction either completes or reports a clear file-write error.
+85. [ ] Start Menu shortcuts - success: Yoink Server, Stop Yoink Server, Yoink folder, and Uninstall Yoink entries work.
+86. [ ] Auto-start on Windows login - success: server starts hidden after sign-in and popup is green within 30 seconds.
+87. [ ] Uninstall - success: files, Start Menu shortcuts, Run key, and helper process are removed/cleared cleanly.
 
 ## 11. Pre-launch packaging gates
 
-84. [ ] `USE_MOCK_API` / mock mode is off for production extension - success: popup talks to real helper, not fixtures.
-85. [ ] `INSTALLER_PUBLISHED` is flipped only after GitHub release asset exists - success: setup download URL resolves to `Yoink-Setup-2.0.0.exe`.
-86. [ ] Manifest version and installer version are aligned - success: Chrome Web Store package, installer, and `server.py VERSION` match launch plan.
-87. [ ] Direct-download hashes are locked - success: Python, ffmpeg, and get-pip hashes in `build.ps1` are non-empty and verified during build.
-88. [ ] Build installer from clean cache - success: `.\build.ps1 -Clean` outputs `build\Yoink-Setup-2.0.0.exe` and hash checks pass.
-89. [ ] Clean Windows VM install - success: unsigned SmartScreen path is understandable, installer runs without admin, helper starts hidden.
-90. [ ] Chrome Web Store package uses production domain/copy - success: footer, setup, README, store listing, and landing links point at `ryanbiddy.com/yoink` or the chosen canonical URL.
-91. [ ] Final docs pass - success: README, security, build-installer, v2 docs, and store listing no longer describe pre-Sprint-7 behavior.
+88. [ ] `USE_MOCK_API` / mock mode is off for production extension - success: popup talks to real helper, not fixtures.
+89. [ ] `INSTALLER_PUBLISHED` is flipped only after GitHub release asset exists - success: setup download URL resolves to `Yoink-Setup-2.0.0.exe`.
+90. [ ] Manifest version and installer version are aligned - success: Chrome Web Store package, installer, and `server.py VERSION` match launch plan.
+91. [ ] Direct-download hashes are locked - success: Python, ffmpeg, and get-pip hashes in `build.ps1` are non-empty and verified during build.
+92. [ ] Build installer from clean cache - success: `.\build.ps1 -Clean` outputs `build\Yoink-Setup-2.0.0.exe` and hash checks pass.
+93. [ ] Clean Windows VM install - success: unsigned SmartScreen path is understandable, installer runs without admin, helper starts hidden.
+94. [ ] Chrome Web Store package uses production domain/copy - success: footer, setup, README, store listing, and landing links point at `ryanbiddy.com/yoink` or the chosen canonical URL.
+95. [ ] Final docs pass - success: README, security, build-installer, v2 docs, and store listing no longer describe pre-Sprint-7 behavior.
