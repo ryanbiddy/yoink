@@ -14,7 +14,7 @@ Yoink fixes that. Click the button under any YouTube video and you get the full 
 v2 ships three adoption paths:
 
 - **Chrome extension** (the creator path): one-click yoinks, plus Playlist Mode, Hook Type classification, Comment Intelligence (AI-powered, BYO key), and Smart Screenshot Picker (local).
-- **MCP server** (the agent path): 12 tools your AI can call directly. Officially tested with Claude Desktop and Cursor; works with most MCP-compatible clients.
+- **MCP server** (the agent path): 13 tools your AI can call directly. Officially tested with Claude Desktop and Cursor; works with most MCP-compatible clients.
 - **Operator Skill**: drop-in `SKILL.md` that turns Claude / OpenClaw / Hermes / Cursor / etc into a YouTube research analyst. Works across 8+ clients via the agentskills.io open standard.
 
 AI-powered features are opt-in and BYO Anthropic API key (stored securely in Windows Credential Manager). The core extraction flow remains fully local — nothing leaves your machine except the YouTube fetch.
@@ -48,7 +48,7 @@ Yoink v2 bundles a portable Skill at `skills/yoink/SKILL.md` and installs it to 
 
 Opt-in grid that shows the screenshots embedded in your clipboard paste so you can pick which to keep. Embed count is configurable on the setup page (default 4, max 12). Fully local — no API key, no network calls.
 **For agent developers (v2)**
-- **MCP server** with 12 tools: `yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`, `get_taxonomy`, `get_citation_map`, `get_yoink_health`.
+- **MCP server** with 13 tools: `yoink_video`, `yoink_playlist`, `get_job_status`, `cancel_job`, `list_recent_yoinks`, `search_yoinks`, `get_yoink_corpus`, `analyze_comments`, `classify_hook`, `get_taxonomy`, `get_citation_map`, `get_yoink_health`, `find_mentions`.
 - Stdio transport (officially tested with Claude Desktop + Cursor).
 - Local HTTP JSON-RPC transport (experimental).
 - Setup page generates copy-pasteable config snippets for each major client.

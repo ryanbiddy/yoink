@@ -33,7 +33,7 @@ Paste it into Claude or ChatGPT. Ask "Decode the hook," "Outline the structure,"
 One click on the in-page button, your clipboard fills with a structured corpus, the chat opens. Paste, prompt, analyze.
 
 **As an MCP server (the agent flow):**
-Yoink ships a local MCP server with 12 tools your AI agent can call directly: `yoink_video`, `yoink_playlist`, `list_recent_yoinks`, `search_yoinks`, `analyze_comments`, `classify_hook`, `get_taxonomy`, `get_citation_map`, `get_yoink_health`, and more. Tell Claude "yoink that video and decode the hook" — it does both. No clipboard step. Officially tested with Claude Desktop and Cursor; community-reported support for ChatGPT Desktop, Continue, and Cline.
+Yoink ships a local MCP server with 13 tools your AI agent can call directly: `yoink_video`, `yoink_playlist`, `list_recent_yoinks`, `search_yoinks`, `analyze_comments`, `classify_hook`, `get_taxonomy`, `get_citation_map`, `get_yoink_health`, `find_mentions`, and more. Tell Claude "yoink that video and decode the hook" — it does both. No clipboard step. Officially tested with Claude Desktop and Cursor; community-reported support for ChatGPT Desktop, Continue, and Cline.
 
 **As an operator Skill (Claude Code, OpenClaw, Hermes, Cursor, and more):**
 Yoink includes a portable `SKILL.md` using the agentskills.io open standard. Drop it into your agent client to add citation discipline, operator-grade YouTube analysis, hook-autopsy tweet mode, and the Yoink Hook Type taxonomy on top of the MCP tools.
