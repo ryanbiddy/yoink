@@ -395,6 +395,56 @@
       text-decoration: none;
     }
     .settings-link:hover { text-decoration: underline; }
+    .calibration-summary {
+      color: var(--yoink-white);
+      font-size: 13px;
+      line-height: 1.45;
+      margin: 0 0 10px;
+    }
+    .corrections-list {
+      max-height: 260px;
+      overflow-y: auto;
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .correction-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 12px;
+      align-items: center;
+      padding: 10px 12px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .correction-title {
+      color: var(--yoink-white);
+      font-weight: 600;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    button.correction-title {
+      width: 100%;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      font-family: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    button.correction-title:hover { color: var(--yoink-accent); }
+    .correction-types {
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+    .correction-date {
+      color: var(--text-mute);
+      font-size: 12px;
+      white-space: nowrap;
+    }
     .mcp-grid {
       display: grid;
       gap: 12px;
@@ -638,6 +688,16 @@
           <span>Enable Hook Type</span>
         </label>
       </div>
+    </section>
+
+    <section id="hook-calibration-settings" class="step">
+      <div class="step-head">
+        <div class="step-num"><span class="step-num-text">HC</span></div>
+        <h2>Hook Type calibration</h2>
+      </div>
+      <p>Review recent corrections you've made when Yoink picked the wrong hook category.</p>
+      <div id="hook-calibration-summary" class="calibration-summary">Start Yoink to load calibration history.</div>
+      <div id="hook-corrections-list" class="corrections-list" aria-live="polite"></div>
     </section>
 
     <section id="smart-screenshot-settings" class="step">

@@ -82,6 +82,8 @@ const aiCostEstimate = document.getElementById("ai-cost-estimate");
 const hookTypeEnabled = document.getElementById("hook-type-enabled");
 const smartScreenshotPickerEnabled = document.getElementById("smart-screenshot-picker-enabled");
 const clipboardScreenshotCap = document.getElementById("clipboard-screenshot-cap");
+const hookCalibrationSummary = document.getElementById("hook-calibration-summary");
+const hookCorrectionsList = document.getElementById("hook-corrections-list");
 const mcpStdioPath = document.getElementById("mcp-stdio-path");
 const mcpHttpUrl = document.getElementById("mcp-http-url");
 const mcpHttpToken = document.getElementById("mcp-http-token");
@@ -265,6 +267,7 @@ function onServerUp() {
   setCIControlsEnabled(true);
   loadAIPricing();
   loadCISettings();
+  loadHookCorrections();
   loadMCPConfig();
   loadSkillSystemPrompt();
   markDone(step3);
@@ -523,6 +526,142 @@ if (ciClearBtn) {
       ciClearBtn.disabled = false;
     }
   });
+}
+
+// ---- Hook Type calibration history --------------------------------------
+async function fetchSetupJsonWithToken(path, init = {}) {
+  if (!window.STC || !STC.getToken) {
+    return { ok: false, error: "Yoink helper unavailable" };
+  }
+  const doFetch = async (token) => {
+    const headers = Object.assign({}, init.headers || {});
+    if (token) headers["X-Yoink-Token"] = token;
+    const res = await fetch(`${SERVER}${path}`, Object.assign({}, init, {
+      headers,
+      mode: "cors",
+      credentials: "omit",
+      cache: init.cache || "no-store",
+    }));
+    let body = null;
+    try { body = await res.json(); } catch { /* empty or non-JSON body */ }
+    return { res, body };
+  };
+
+  let token = await STC.getToken();
+  let out = await doFetch(token);
+  if (out.res.status === 403) {
+    token = await STC.getToken({ refresh: true });
+    out = await doFetch(token);
+  }
+  if (!out.res.ok || !out.body) {
+    return {
+      ok: false,
+      error: (out.body && out.body.error) || `HTTP ${out.res.status}`,
+    };
+  }
+  return out.body;
+}
+
+function hookTypeLabel(value) {
+  return String(value || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase()) || "Unknown";
+}
+
+function correctionDateLabel(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function correctionRowsFromResponse(body) {
+  if (!body || typeof body !== "object") return [];
+  if (Array.isArray(body.corrections)) return body.corrections;
+  if (Array.isArray(body.items)) return body.items;
+  if (Array.isArray(body.results)) return body.results;
+  return [];
+}
+
+function renderHookCorrections(body) {
+  if (!hookCalibrationSummary || !hookCorrectionsList) return;
+  const rows = correctionRowsFromResponse(body);
+  const total = Number.isFinite(Number(body && body.total))
+    ? Number(body.total)
+    : rows.length;
+
+  hookCorrectionsList.innerHTML = "";
+  hookCalibrationSummary.textContent =
+    `You've made ${total} correction${total === 1 ? "" : "s"}. ` +
+    "Your classifier is calibrated to your judgment.";
+
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "sub";
+    empty.textContent = "No corrections yet. When you fix a Hook Type in the popup, it will appear here.";
+    hookCorrectionsList.appendChild(empty);
+    return;
+  }
+
+  for (const row of rows.slice(0, 20)) {
+    const item = document.createElement("div");
+    item.className = "correction-row";
+
+    const left = document.createElement("div");
+    const titleText = row.title || row.video_title || row.slug || "Untitled yoink";
+    const folder = row.folder || row.session_folder || row.output_folder || "";
+    const title = document.createElement(folder ? "button" : "div");
+    title.className = "correction-title";
+    title.textContent = titleText;
+    if (folder) {
+      title.type = "button";
+      title.title = "Open yoink folder";
+      title.addEventListener("click", async () => {
+        try { await STC.openFolder(folder); } catch { /* best effort */ }
+      });
+    }
+
+    const types = document.createElement("div");
+    types.className = "correction-types";
+    const original = hookTypeLabel(
+      row.original_hook_type || row.previous_hook_type || row.from_hook_type
+    );
+    const corrected = hookTypeLabel(
+      row.corrected_hook_type || row.hook_type || row.to_hook_type
+    );
+    types.textContent = `${original} \u2192 ${corrected}`;
+
+    left.appendChild(title);
+    left.appendChild(types);
+
+    const date = document.createElement("div");
+    date.className = "correction-date";
+    date.textContent = correctionDateLabel(
+      row.corrected_at || row.created_at || row.updated_at || row.date
+    );
+
+    item.appendChild(left);
+    item.appendChild(date);
+    hookCorrectionsList.appendChild(item);
+  }
+}
+
+async function loadHookCorrections() {
+  if (!hookCalibrationSummary || !hookCorrectionsList) return;
+  hookCalibrationSummary.textContent = "Loading calibration history...";
+  hookCorrectionsList.innerHTML = "";
+  try {
+    const body = await fetchSetupJsonWithToken("/taxonomy/corrections?limit=20", {
+      method: "GET",
+    });
+    if (!body || body.ok === false) {
+      throw new Error((body && body.error) || "Calibration history unavailable");
+    }
+    renderHookCorrections(body);
+  } catch (e) {
+    hookCalibrationSummary.textContent =
+      (e && e.message) || "Calibration history unavailable.";
+  }
 }
 
 // ---- MCP config snippets -------------------------------------------------
