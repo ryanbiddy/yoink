@@ -471,7 +471,10 @@ class Index:
 
     # ---- taxonomy --------------------------------------------------------
     def upsert_taxonomy(self, record: dict) -> None:
-        """Insert or replace one taxonomy row, deduplicated by video_id."""
+        """Insert or replace one taxonomy row, deduplicated by video_id.
+
+        ``confidence`` (1-5, Sprint 17) is optional -- a record without it
+        stores NULL, which is also the pre-Sprint-17 state."""
         video_id = record.get("video_id")
         if not video_id:
             raise ValueError("upsert_taxonomy: record requires a video_id")
@@ -479,11 +482,12 @@ class Index:
             self._conn.execute(
                 "INSERT OR REPLACE INTO taxonomy "
                 "(video_id, hook_type, hook_explanation, channel, title, "
-                " classified_at) VALUES (?, ?, ?, ?, ?, ?)",
+                " classified_at, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (video_id, record.get("hook_type"),
                  record.get("hook_explanation"), record.get("channel"),
                  record.get("title"),
-                 record.get("classified_at") or _now_iso()),
+                 record.get("classified_at") or _now_iso(),
+                 record.get("confidence")),
             )
             self._conn.commit()
 
@@ -508,6 +512,126 @@ class Index:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- taxonomy corrections (Sprint 17) -------------------------------
+    # Few-shot anchor budget: at most this many past corrections are fed
+    # back into a classification prompt.
+    _CORRECTION_FEWSHOT_CAP = 8
+
+    def upsert_taxonomy_correction(self, video_id: str, original: str,
+                                   corrected: str, user_reason: str | None = None,
+                                   channel: str | None = None,
+                                   topic: str | None = None) -> int:
+        """Record a user's hook-type correction (append-only -- a video may
+        be corrected more than once) and promote the corrected value to
+        taxonomy.hook_type, so the corrected classification is canonical.
+        channel / topic are denormalized in for similarity matching. Returns
+        the new correction_id."""
+        if not video_id:
+            raise ValueError("upsert_taxonomy_correction: video_id required")
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO taxonomy_corrections "
+                    "(video_id, original_hook_type, corrected_hook_type, "
+                    " user_reason, corrected_at, channel, topic) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (video_id, original, corrected, user_reason or None,
+                     _now_iso(), channel, topic),
+                )
+                correction_id = cur.lastrowid
+                # The corrected value becomes the canonical classification.
+                self._conn.execute(
+                    "UPDATE taxonomy SET hook_type=? WHERE video_id=?",
+                    (corrected, video_id),
+                )
+                self._conn.commit()
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+        return correction_id
+
+    def list_corrections(self, limit: int = 50, *,
+                          channel: str | None = None,
+                          topic: str | None = None) -> list[dict]:
+        """Recent corrections, newest first, with the yoink title joined in.
+        Optional channel / topic filters. Feeds the corrections-review
+        surface."""
+        sql = ("SELECT c.*, y.title AS title FROM taxonomy_corrections c "
+               "LEFT JOIN yoinks y ON y.video_id = c.video_id ")
+        clauses: list[str] = []
+        params: list = []
+        if channel:
+            clauses.append("c.channel = ?")
+            params.append(channel)
+        if topic:
+            clauses.append("c.topic = ?")
+            params.append(topic)
+        if clauses:
+            sql += "WHERE " + " AND ".join(clauses) + " "
+        sql += "ORDER BY c.corrected_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def similar_corrections(self, video_id: str, limit: int = 8) -> list[dict]:
+        """The corrections most relevant to ``video_id``, used as few-shot
+        calibration anchors when re-classifying it.
+
+        Relevance order: same channel (the creator's own style), then same
+        topic (the broader category), then most-recent overall. Deduplicated
+        and capped at 8. A video's own past corrections are intentionally
+        included -- re-classifying a corrected video should see that the
+        user already fixed it."""
+        limit = max(1, min(self._CORRECTION_FEWSHOT_CAP, int(limit)))
+        base = ("SELECT c.*, y.title AS title FROM taxonomy_corrections c "
+                "LEFT JOIN yoinks y ON y.video_id = c.video_id ")
+        out: list[dict] = []
+        seen: set[int] = set()
+
+        def _absorb(rows) -> bool:
+            for r in rows:
+                cid = r["correction_id"]
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                out.append(dict(r))
+                if len(out) >= limit:
+                    return True
+            return False
+
+        with self._lock:
+            vrow = self._conn.execute(
+                "SELECT channel, topic FROM yoinks WHERE video_id=?",
+                (video_id,),
+            ).fetchone()
+            channel = vrow["channel"] if vrow else None
+            topic = vrow["topic"] if vrow else None
+            # Pass 1: same channel.
+            if channel:
+                rows = self._conn.execute(
+                    base + "WHERE c.channel = ? "
+                    "ORDER BY c.corrected_at DESC LIMIT ?",
+                    (channel, limit),
+                ).fetchall()
+                if _absorb(rows):
+                    return out
+            # Pass 2: same topic.
+            if topic:
+                rows = self._conn.execute(
+                    base + "WHERE c.topic = ? "
+                    "ORDER BY c.corrected_at DESC LIMIT ?",
+                    (topic, limit),
+                ).fetchall()
+                if _absorb(rows):
+                    return out
+            # Pass 3: fill remaining slots with the most recent corrections.
+            rows = self._conn.execute(
+                base + "ORDER BY c.corrected_at DESC LIMIT ?", (limit,),
+            ).fetchall()
+            _absorb(rows)
+        return out
 
     # ---- entities (Sprint 16) -------------------------------------------
     def record_entities(self, video_id: str, entities: list[dict], *,

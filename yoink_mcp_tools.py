@@ -466,11 +466,18 @@ def classify_hook(args: dict[str, Any]) -> dict[str, Any]:
             status="completed",
             hook_type=analysis.get("hook_type"),
             hook_explanation=analysis.get("hook_explanation"),
+            confidence=analysis.get("confidence"),
         )
         b._append_hook_taxonomy(context, analysis)
+        # Sprint 17 (A3): the response now carries the classifier's 1-5
+        # confidence and how many past corrections were injected as
+        # few-shot anchors. Both fields are additive -- pre-Sprint-17
+        # consumers ignore them.
         return _ok(
             hook_type=analysis.get("hook_type"),
             hook_explanation=analysis.get("hook_explanation"),
+            confidence=analysis.get("confidence"),
+            similar_corrections_used=analysis.get("similar_corrections_used") or 0,
         )
     except b.AnthropicAPIError as e:
         return _err(b._short_reason(e.reason))

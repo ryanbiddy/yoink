@@ -184,6 +184,28 @@ def _check_token_rate_limit() -> bool:
     return True
 
 
+# POST /taxonomy/correct rate limit (Sprint 17). Corrections are
+# user-initiated (a click in the popup), so 30/min is generous for real
+# use and still caps a runaway client.
+_TAXONOMY_CORRECT_RATE_LIMIT = 30
+_TAXONOMY_CORRECT_RATE_WINDOW_SEC = 60.0
+_taxonomy_correct_request_times: list[float] = []
+_taxonomy_correct_rate_lock = threading.Lock()
+
+
+def _check_taxonomy_correct_rate_limit() -> bool:
+    now = time.monotonic()
+    with _taxonomy_correct_rate_lock:
+        cutoff = now - _TAXONOMY_CORRECT_RATE_WINDOW_SEC
+        kept = [t for t in _taxonomy_correct_request_times if t > cutoff]
+        if len(kept) >= _TAXONOMY_CORRECT_RATE_LIMIT:
+            _taxonomy_correct_request_times[:] = kept
+            return False
+        kept.append(now)
+        _taxonomy_correct_request_times[:] = kept
+    return True
+
+
 # ---- Settings (v2.1 BYO Anthropic key) ------------------------------------
 class CredentialStoreError(RuntimeError):
     """Raised when the OS credential store cannot read/write a saved key."""
@@ -1542,11 +1564,80 @@ def _normalize_hook_analysis(data: dict) -> dict:
     }
 
 
+# The nine hook-type categories with one-line definitions, used as the
+# system-prompt classification guide (Sprint 17 / A3). The names match
+# HOOK_TYPES exactly.
+_HOOK_TYPE_GUIDE = (
+    "Hook type categories (pick exactly one):\n"
+    "- curiosity_gap: teases an answer or outcome without revealing it, "
+    "opening an information gap the viewer wants closed.\n"
+    "- question: opens by directly asking the viewer a question.\n"
+    "- contrarian: leads with a claim that challenges a common belief or "
+    "consensus.\n"
+    "- story_open: opens with a personal anecdote or a narrative scene.\n"
+    "- promise_list: promises a specific list or count of takeaways, e.g. "
+    "'5 ways to ...'.\n"
+    "- demo: opens by showing the thing in action -- a visual or live "
+    "demonstration.\n"
+    "- authority: opens by establishing credentials, results, or proof of "
+    "expertise.\n"
+    "- stakes: opens by emphasizing what the viewer stands to gain or lose.\n"
+    "- other: none of the above, or no identifiable hook pattern."
+)
+
+
+def _hook_fewshot_block(similar: list[dict]) -> str:
+    """Format past user corrections as few-shot calibration anchors for the
+    hook-type system prompt (A3). Empty string when there are none."""
+    if not similar:
+        return ""
+    lines = ["", "",
+             "Past corrections from this user (use as calibration anchors):"]
+    for c in similar:
+        title = _clean_text(c.get("title"), limit=160) or "(untitled)"
+        channel = _clean_text(c.get("channel"), limit=120) or "(unknown channel)"
+        line = (f'- Video "{title}" on channel "{channel}": classifier said '
+                f'"{c.get("original_hook_type")}", user corrected to '
+                f'"{c.get("corrected_hook_type")}".')
+        reason = _clean_text(c.get("user_reason"), limit=300)
+        if reason:
+            line += f' Reason: "{reason}"'
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# Appended to the hook-type system prompt -- elicits an explicit 1-5
+# self-confidence score on a line after the JSON (Sprint 17 / A3).
+_HOOK_CONFIDENCE_GUIDE = (
+    "\n\nAfter the JSON, on a separate line, output your confidence as "
+    "exactly `Confidence: N`, where N is an integer from 1 to 5:\n"
+    "- 5 = very confident, hook clearly fits exactly one category\n"
+    "- 4 = confident, mild ambiguity\n"
+    "- 3 = moderate, hook could fit one of two categories\n"
+    "- 2 = uncertain, hook fits 'other' or is borderline\n"
+    "- 1 = guessing, no clear pattern"
+)
+
+
+def _parse_hook_confidence(text: str) -> int | None:
+    """Pull the 1-5 confidence integer from a hook-type model response.
+    Returns None when the model emitted no parseable score."""
+    text = text or ""
+    m = re.search(r"confidence\s*[:=]\s*([1-5])\b", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    # Looser fallback: "confidence" followed shortly by a 1-5 digit.
+    m = re.search(r"confidence\D{0,12}([1-5])\b", text, re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
 def analyze_hook_type(context: dict, *, api_key: str | None = None) -> dict:
     """Classify one video's opening style.
 
-    Kept as a small vendor-neutral function so Sprint 4 can wrap it as an
-    MCP tool without coupling the tool surface to Anthropic.
+    A3 (Sprint 17): self-calibrating. Past user corrections relevant to the
+    video (same channel, then topic, then recent) are fetched from the
+    library index and injected as few-shot anchors. Kept vendor-neutral so
+    the MCP tool surface stays decoupled from Anthropic.
     """
     key = (api_key or _anthropic_key_for_feature("hook_type_enabled") or "").strip()
     if not key:
@@ -1566,28 +1657,48 @@ def analyze_hook_type(context: dict, *, api_key: str | None = None) -> dict:
         ),
         "top_comment": _clean_text(context.get("top_comment"), limit=600),
     }
+
+    # A3: past corrections relevant to this video become few-shot anchors.
+    # Best-effort -- an index failure must never fail the classification.
+    similar: list[dict] = []
+    video_id = (context.get("video_id") or "").strip()
+    if video_id:
+        try:
+            similar = _get_index().similar_corrections(video_id, limit=8)
+        except Exception as e:
+            log.warning("hook similar-corrections fetch failed: %s", e)
+            similar = []
+
     system = (
-        "You classify YouTube video hook styles for a creator-operator. "
-        "Return valid JSON only. Pick exactly one allowed hook_type."
+        "You classify YouTube video hook styles for a creator-operator.\n\n"
+        + _HOOK_TYPE_GUIDE
+        + _hook_fewshot_block(similar)
+        + "\n\nReturn valid JSON only, of exactly this shape:\n"
+        '{"hook_type": string, "hook_explanation": string}\n'
+        "hook_type must be exactly one of the categories above. "
+        "hook_explanation is one or two sentences on what makes the opening "
+        "fit that type."
+        + _HOOK_CONFIDENCE_GUIDE
     )
     user = (
-        "Classify this video's hook style. Return this exact JSON shape:\n"
-        '{"hook_type": string, "hook_explanation": string}\n\n'
-        "Allowed hook_type values: curiosity_gap, question, contrarian, "
-        "story_open, promise_list, demo, authority, stakes, other.\n"
-        "hook_explanation must be one or two sentences about what makes the "
-        "opening fit that hook type.\n\n"
+        "Classify this video's hook style.\n\n"
         f"Video context JSON:\n{json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        resp = _anthropic_messages(key, system=system, user=user, max_tokens=320)
-        return _normalize_hook_analysis(
-            _extract_json_object(_anthropic_text(resp), label="Hook Type")
+        resp = _anthropic_messages(key, system=system, user=user, max_tokens=400)
+        text = _anthropic_text(resp)
+        analysis = _normalize_hook_analysis(
+            _extract_json_object(text, label="Hook Type")
         )
     except AnthropicAPIError as e:
         if e.status == 401:
             _mark_anthropic_key_invalid()
         raise
+    # Confidence rides on a separate line after the JSON; parse it off the
+    # raw text. None when the model didn't emit a parseable score.
+    analysis["confidence"] = _parse_hook_confidence(text)
+    analysis["similar_corrections_used"] = len(similar)
+    return analysis
 
 
 def _render_hook_analysis(analysis: dict) -> str:
@@ -1647,6 +1758,7 @@ def _replace_hook_analysis_section(yoink_path: Path, body: str) -> None:
 def _update_sidecar_hook_type(output_folder: Path, *, status: str,
                               hook_type: str | None = None,
                               hook_explanation: str | None = None,
+                              confidence: int | None = None,
                               error: str | None = None) -> None:
     sidecar_path = output_folder / f"{output_folder.name}.json"
     with _sidecar_update_lock:
@@ -1660,6 +1772,7 @@ def _update_sidecar_hook_type(output_folder: Path, *, status: str,
         data["hook_type_status"] = status
         data["hook_type"] = hook_type
         data["hook_explanation"] = hook_explanation
+        data["hook_type_confidence"] = confidence
         data["hook_type_error"] = error
         data["hook_type_updated_at"] = _now_iso()
         tmp = sidecar_path.with_suffix(".json.tmp")
@@ -1668,6 +1781,37 @@ def _update_sidecar_hook_type(output_folder: Path, *, status: str,
             tmp.replace(sidecar_path)
         except OSError as e:
             log.warning("sidecar Hook Type update: write failed (%s)", e)
+
+
+def _record_correction_in_sidecar(sidecar_path: Path, original: str,
+                                  corrected: str) -> None:
+    """Reflect a hook-type correction in the per-video sidecar (Sprint 17):
+    promote hook_type to the corrected value and append an entry to the
+    append-only hook_type_corrections log. Best-effort, serialised through
+    _sidecar_update_lock."""
+    with _sidecar_update_lock:
+        try:
+            data = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            log.warning("sidecar correction update: read failed (%s)", e)
+            return
+        data["hook_type"] = corrected
+        log_entries = data.get("hook_type_corrections")
+        if not isinstance(log_entries, list):
+            log_entries = []
+        log_entries.append({
+            "original": original,
+            "corrected": corrected,
+            "corrected_at": _now_iso(),
+        })
+        data["hook_type_corrections"] = log_entries
+        tmp = sidecar_path.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(sidecar_path)
+        except OSError as e:
+            log.warning("sidecar correction update: write failed (%s)", e)
 
 
 def _append_hook_taxonomy(context: dict, analysis: dict) -> None:
@@ -1685,6 +1829,7 @@ def _append_hook_taxonomy(context: dict, analysis: dict) -> None:
             "channel": context.get("channel") or None,
             "title": context.get("title") or None,
             "classified_at": _now_iso(),
+            "confidence": analysis.get("confidence"),
         })
     except Exception as e:
         log.warning("hook taxonomy index write failed: %s", e)
@@ -1760,6 +1905,7 @@ def _hook_type_worker(output_folder: Path, yoink_path: Path,
             status="completed",
             hook_type=analysis.get("hook_type"),
             hook_explanation=analysis.get("hook_explanation"),
+            confidence=analysis.get("confidence"),
         )
         _append_hook_taxonomy(context, analysis)
         log.info("Hook Type appended to %s", yoink_path)
@@ -2557,6 +2703,7 @@ def _run_extraction(url: str, interval: int, output_folder: Path,
             "hook_type_status": "pending" if hook_type_pending else "skipped",
             "hook_type": None,
             "hook_explanation": None,
+            "hook_type_confidence": None,
             "hook_type_error": None,
             "comment_intelligence": None,
             "comment_intelligence_status": "not_run",
@@ -4692,6 +4839,8 @@ class Handler(BaseHTTPRequestHandler):
         if bare == "/index/backfill-cancel":
             _backfill_cancel.set()
             return self._send_json(200, {"ok": True, "cancelled": True})
+        if bare == "/taxonomy/correct":
+            return self._handle_taxonomy_correct(body)
         if bare == "/session/start":
             return self._handle_session_start(body)
         if bare == "/session/add":
@@ -4851,6 +5000,69 @@ class Handler(BaseHTTPRequestHandler):
                 limit=limit,
             ),
         })
+
+    # ---- /taxonomy/correct ----
+    def _handle_taxonomy_correct(self, body: dict):
+        """Record a user's Hook Type correction (Sprint 17 / A3). The
+        corrected value becomes the canonical classification and feeds back
+        into future classifications as a few-shot anchor."""
+        if not _check_taxonomy_correct_rate_limit():
+            return self._send_json(429, {"ok": False, "error": "too many requests"})
+        video_id = (body.get("video_id") or "").strip()
+        corrected = (body.get("corrected_hook_type") or "").strip().lower()
+        user_reason = body.get("user_reason")
+        if not video_id:
+            return self._send_json(400, {"ok": False, "error": "video_id required"})
+        if corrected not in HOOK_TYPES:
+            return self._send_json(
+                400, {"ok": False, "error": "corrected_hook_type invalid"})
+        if user_reason is not None and not isinstance(user_reason, str):
+            return self._send_json(
+                400, {"ok": False, "error": "user_reason must be a string"})
+        user_reason = (user_reason or "").strip() or None
+
+        idx = _get_index()
+        try:
+            yoink = idx.get_yoink(video_id)
+        except Exception as e:
+            log.warning("taxonomy correct: index read failed: %s", e)
+            return self._send_json(500, {"ok": False, "error": "index unavailable"})
+        if not yoink:
+            return self._send_json(404, {"ok": False, "error": "video not found"})
+
+        # The original (pre-correction) hook type is read from the sidecar,
+        # which the Hook Type worker keeps current; it is also the file this
+        # endpoint updates.
+        sidecar_path = Path(yoink.get("sidecar_path") or "")
+        original = None
+        try:
+            sc = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            original = (sc.get("hook_type") or "").strip() or None
+        except (OSError, json.JSONDecodeError):
+            original = None
+        if not original:
+            return self._send_json(409, {
+                "ok": False,
+                "error": "video has no hook classification to correct",
+            })
+
+        try:
+            correction_id = idx.upsert_taxonomy_correction(
+                video_id, original, corrected,
+                user_reason=user_reason,
+                channel=yoink.get("channel"),
+                topic=yoink.get("topic"),
+            )
+        except Exception as e:
+            log.warning("taxonomy correct: write failed: %s", e)
+            return self._send_json(
+                500, {"ok": False, "error": "could not store correction"})
+
+        # Sidecar update is best-effort -- the index row is authoritative.
+        _record_correction_in_sidecar(sidecar_path, original, corrected)
+        log.info("taxonomy correction: %s %s -> %s (#%s)",
+                 video_id, original, corrected, correction_id)
+        self._send_json(200, {"ok": True, "correction_id": correction_id})
 
     def _handle_extract(self, body: dict):
         url, interval, err = self._validate_url_interval(body)
