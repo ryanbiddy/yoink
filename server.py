@@ -1542,11 +1542,55 @@ def _normalize_hook_analysis(data: dict) -> dict:
     }
 
 
+# The nine hook-type categories with one-line definitions, used as the
+# system-prompt classification guide (Sprint 17 / A3). The names match
+# HOOK_TYPES exactly.
+_HOOK_TYPE_GUIDE = (
+    "Hook type categories (pick exactly one):\n"
+    "- curiosity_gap: teases an answer or outcome without revealing it, "
+    "opening an information gap the viewer wants closed.\n"
+    "- question: opens by directly asking the viewer a question.\n"
+    "- contrarian: leads with a claim that challenges a common belief or "
+    "consensus.\n"
+    "- story_open: opens with a personal anecdote or a narrative scene.\n"
+    "- promise_list: promises a specific list or count of takeaways, e.g. "
+    "'5 ways to ...'.\n"
+    "- demo: opens by showing the thing in action -- a visual or live "
+    "demonstration.\n"
+    "- authority: opens by establishing credentials, results, or proof of "
+    "expertise.\n"
+    "- stakes: opens by emphasizing what the viewer stands to gain or lose.\n"
+    "- other: none of the above, or no identifiable hook pattern."
+)
+
+
+def _hook_fewshot_block(similar: list[dict]) -> str:
+    """Format past user corrections as few-shot calibration anchors for the
+    hook-type system prompt (A3). Empty string when there are none."""
+    if not similar:
+        return ""
+    lines = ["", "",
+             "Past corrections from this user (use as calibration anchors):"]
+    for c in similar:
+        title = _clean_text(c.get("title"), limit=160) or "(untitled)"
+        channel = _clean_text(c.get("channel"), limit=120) or "(unknown channel)"
+        line = (f'- Video "{title}" on channel "{channel}": classifier said '
+                f'"{c.get("original_hook_type")}", user corrected to '
+                f'"{c.get("corrected_hook_type")}".')
+        reason = _clean_text(c.get("user_reason"), limit=300)
+        if reason:
+            line += f' Reason: "{reason}"'
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def analyze_hook_type(context: dict, *, api_key: str | None = None) -> dict:
     """Classify one video's opening style.
 
-    Kept as a small vendor-neutral function so Sprint 4 can wrap it as an
-    MCP tool without coupling the tool surface to Anthropic.
+    A3 (Sprint 17): self-calibrating. Past user corrections relevant to the
+    video (same channel, then topic, then recent) are fetched from the
+    library index and injected as few-shot anchors. Kept vendor-neutral so
+    the MCP tool surface stays decoupled from Anthropic.
     """
     key = (api_key or _anthropic_key_for_feature("hook_type_enabled") or "").strip()
     if not key:
@@ -1566,28 +1610,43 @@ def analyze_hook_type(context: dict, *, api_key: str | None = None) -> dict:
         ),
         "top_comment": _clean_text(context.get("top_comment"), limit=600),
     }
+
+    # A3: past corrections relevant to this video become few-shot anchors.
+    # Best-effort -- an index failure must never fail the classification.
+    similar: list[dict] = []
+    video_id = (context.get("video_id") or "").strip()
+    if video_id:
+        try:
+            similar = _get_index().similar_corrections(video_id, limit=8)
+        except Exception as e:
+            log.warning("hook similar-corrections fetch failed: %s", e)
+            similar = []
+
     system = (
-        "You classify YouTube video hook styles for a creator-operator. "
-        "Return valid JSON only. Pick exactly one allowed hook_type."
+        "You classify YouTube video hook styles for a creator-operator.\n\n"
+        + _HOOK_TYPE_GUIDE
+        + _hook_fewshot_block(similar)
+        + "\n\nReturn valid JSON only, of exactly this shape:\n"
+        '{"hook_type": string, "hook_explanation": string}\n'
+        "hook_type must be exactly one of the categories above. "
+        "hook_explanation is one or two sentences on what makes the opening "
+        "fit that type."
     )
     user = (
-        "Classify this video's hook style. Return this exact JSON shape:\n"
-        '{"hook_type": string, "hook_explanation": string}\n\n'
-        "Allowed hook_type values: curiosity_gap, question, contrarian, "
-        "story_open, promise_list, demo, authority, stakes, other.\n"
-        "hook_explanation must be one or two sentences about what makes the "
-        "opening fit that hook type.\n\n"
+        "Classify this video's hook style.\n\n"
         f"Video context JSON:\n{json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        resp = _anthropic_messages(key, system=system, user=user, max_tokens=320)
-        return _normalize_hook_analysis(
+        resp = _anthropic_messages(key, system=system, user=user, max_tokens=400)
+        analysis = _normalize_hook_analysis(
             _extract_json_object(_anthropic_text(resp), label="Hook Type")
         )
     except AnthropicAPIError as e:
         if e.status == 401:
             _mark_anthropic_key_invalid()
         raise
+    analysis["similar_corrections_used"] = len(similar)
+    return analysis
 
 
 def _render_hook_analysis(analysis: dict) -> str:
