@@ -790,6 +790,38 @@ function renderHealthRow(health) {
   return row;
 }
 
+function topEntityNames(row) {
+  const raw = row && Array.isArray(row.top_entities) ? row.top_entities : [];
+  return raw
+    .map((entity) => {
+      if (typeof entity === "string") return entity.trim();
+      if (entity && typeof entity === "object") {
+        return String(entity.name || entity.label || "").trim();
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function renderEntityIndicator(row) {
+  const count = Number(row && row.entity_count);
+  if (!Number.isFinite(count) || count <= 0) return null;
+
+  const indicator = document.createElement("span");
+  indicator.className = "entity-indicator";
+  indicator.textContent = `\u{1F4CD} ${count} ${count === 1 ? "entity" : "entities"}`;
+
+  const names = topEntityNames(row);
+  const tooltip = names.length
+    ? names.join("\n")
+    : `${count} ${count === 1 ? "entity" : "entities"} detected`;
+  indicator.title = tooltip;
+  indicator.setAttribute("aria-label", tooltip);
+
+  return indicator;
+}
+
 async function loadRecentYoinks() {
   if (!recentYoinksEl) return;
   let recent = [];
@@ -829,6 +861,8 @@ async function loadRecentYoinks() {
     main.appendChild(text);
 
     const healthRow = renderHealthRow(r.health);
+    const entityIndicator = renderEntityIndicator(r);
+    if (entityIndicator) main.appendChild(entityIndicator);
     if (healthRow) main.appendChild(healthRow);
     item.appendChild(main);
     item.addEventListener("click", () => {
