@@ -870,8 +870,24 @@ function hookInfo(row) {
       ?? hook.similar_corrections_used
       ?? hook.corrections_used
     ) || 0,
-    videoId: row.video_id || hook.video_id || null,
+    videoId: row.video_id
+      || hook.video_id
+      || (row.url && STC.extractVideoId(row.url))
+      || (row.source_url && STC.extractVideoId(row.source_url))
+      || null,
   };
+}
+
+async function postHookCorrection(videoId, correctedHookType) {
+  return popupAuthedJson("/taxonomy/correct", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      video_id: videoId,
+      corrected_hook_type: correctedHookType,
+      user_reason: "",
+    }),
+  });
 }
 
 function renderHookCalibration(row) {
@@ -895,11 +911,88 @@ function renderHookCalibration(row) {
 
   wrap.appendChild(chip);
 
+  const suffix = document.createElement("span");
+  suffix.className = "hook-muted";
   if (info.similarCorrectionsUsed > 0) {
-    const suffix = document.createElement("span");
-    suffix.className = "hook-muted";
     suffix.textContent = `(calibrated from ${info.similarCorrectionsUsed} past corrections)`;
     wrap.appendChild(suffix);
+  }
+
+  const message = document.createElement("span");
+  message.className = "hook-correction-message";
+
+  if (info.videoId) {
+    const correctionLink = document.createElement("span");
+    correctionLink.className = "hook-correction-link";
+    correctionLink.setAttribute("role", "button");
+    correctionLink.tabIndex = 0;
+    correctionLink.textContent = "wrong?";
+
+    const hideTimer = setTimeout(() => {
+      if (correctionLink.isConnected) correctionLink.remove();
+    }, 60_000);
+
+    const openCorrectionPicker = () => {
+      clearTimeout(hideTimer);
+      correctionLink.remove();
+      message.textContent = "";
+      message.className = "hook-correction-message";
+
+      const select = document.createElement("select");
+      select.className = "hook-correction-select";
+      select.setAttribute("aria-label", "Correct hook type");
+
+      for (const category of HOOK_TYPE_CATEGORIES) {
+        const option = document.createElement("option");
+        option.value = category;
+        option.textContent = hookDisplayName(category);
+        option.selected = category === info.hookType;
+        select.appendChild(option);
+      }
+
+      select.addEventListener("change", async () => {
+        const corrected = select.value;
+        if (!corrected || corrected === info.hookType) return;
+        select.disabled = true;
+        message.textContent = "Updating...";
+        message.className = "hook-correction-message";
+        try {
+          const res = await postHookCorrection(info.videoId, corrected);
+          if (!res || res.ok === false) {
+            throw new Error((res && res.error) || "Correction failed");
+          }
+          info.hookType = corrected;
+          chip.classList.remove("warning");
+          chip.textContent = hookDisplayName(corrected);
+          suffix.textContent = "+1 calibration";
+          if (!suffix.isConnected) wrap.appendChild(suffix);
+          message.textContent =
+            "Updated - thank you, future classifications will use this calibration.";
+          select.remove();
+        } catch (e) {
+          message.className = "hook-correction-error";
+          message.textContent = (e && e.message) || "Correction failed";
+          select.disabled = false;
+        }
+      });
+
+      wrap.appendChild(select);
+      if (!message.isConnected) wrap.appendChild(message);
+      select.focus();
+    };
+
+    correctionLink.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openCorrectionPicker();
+    });
+    correctionLink.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openCorrectionPicker();
+      }
+    });
+    wrap.appendChild(correctionLink);
   }
 
   return wrap;
