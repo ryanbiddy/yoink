@@ -2,7 +2,7 @@
 
 Use this as the one pre-launch checklist. Run on a clean Windows user profile if possible, then repeat the core extraction subset on the normal dev machine.
 
-Total checkpoints: 99.
+Total checkpoints: 108.
 
 ## 1. Core extraction - single-video v1 regression
 
@@ -115,23 +115,35 @@ Total checkpoints: 99.
 83. [ ] Yoink three new videos - success: each appears incrementally in Recent yoinks or indexed search surfaces without a full re-scan.
 84. [ ] Search yoinks against a corpus of 50+ - success: returns in under 500ms.
 
-## 10. Windows path handling
+## 10. Yoink Memory page
 
-85. [ ] OneDrive Desktop redirection - success: Yoink output root resolves to the actual known Desktop path, not a guessed `%USERPROFILE%\Desktop`.
-86. [ ] Video title is a Windows reserved name (`CON`, `AUX`, `LPT1`) - success: folder slug is safe and extraction completes.
-87. [ ] Very long video title - success: folder/file creation succeeds or fails gracefully without path traversal.
-88. [ ] Desktop on network/synced drive - success: extraction either completes or reports a clear file-write error.
-89. [ ] Start Menu shortcuts - success: Yoink Server, Stop Yoink Server, Yoink folder, and Uninstall Yoink entries work.
-90. [ ] Auto-start on Windows login - success: server starts hidden after sign-in and popup is green within 30 seconds.
-91. [ ] Uninstall - success: files, Start Menu shortcuts, Run key, and helper process are removed/cleared cleanly.
+85. [ ] Open Yoink Memory from popup link - success: page opens in a new tab and shows all non-deleted yoinks.
+86. [ ] Filter by channel - success: results narrow to that channel only.
+87. [ ] Filter by hook_type - success: results narrow to that category only.
+88. [ ] Combine search + channel + date_from - success: results match all three filters.
+89. [ ] Click "Delete" on a yoink - success: undo toast appears and the row disappears from the list.
+90. [ ] Reload Memory page - success: deleted row stays hidden.
+91. [ ] Check filesystem after delete - success: folder is in `DESKTOP_ROOT\_yoink-trash\<topic>\<slug>__deleted-<timestamp>\`.
+92. [ ] POST `/memory/restore` with the `video_id` - success: row reappears in Memory and folder returns to its original location.
+93. [ ] Mock trash with deletion timestamp over 30 days old - success: next helper boot purges it, folder is gone, and index row is gone.
 
-## 11. Pre-launch packaging gates
+## 11. Windows path handling
 
-92. [ ] `USE_MOCK_API` / mock mode is off for production extension - success: popup talks to real helper, not fixtures.
-93. [ ] `INSTALLER_PUBLISHED` is flipped only after GitHub release asset exists - success: setup download URL resolves to `Yoink-Setup-2.0.0.exe`.
-94. [ ] Manifest version and installer version are aligned - success: Chrome Web Store package, installer, and `server.py VERSION` match launch plan.
-95. [ ] Direct-download hashes are locked - success: Python, ffmpeg, and get-pip hashes in `build.ps1` are non-empty and verified during build.
-96. [ ] Build installer from clean cache - success: `.\build.ps1 -Clean` outputs `build\Yoink-Setup-2.0.0.exe` and hash checks pass.
-97. [ ] Clean Windows VM install - success: unsigned SmartScreen path is understandable, installer runs without admin, helper starts hidden.
-98. [ ] Chrome Web Store package uses production domain/copy - success: footer, setup, README, store listing, and landing links point at `ryanbiddy.com/yoink` or the chosen canonical URL.
-99. [ ] Final docs pass - success: README, security, build-installer, v2 docs, and store listing no longer describe pre-Sprint-7 behavior.
+94. [ ] OneDrive Desktop redirection - success: Yoink output root resolves to the actual known Desktop path, not a guessed `%USERPROFILE%\Desktop`.
+95. [ ] Video title is a Windows reserved name (`CON`, `AUX`, `LPT1`) - success: folder slug is safe and extraction completes.
+96. [ ] Very long video title - success: folder/file creation succeeds or fails gracefully without path traversal.
+97. [ ] Desktop on network/synced drive - success: extraction either completes or reports a clear file-write error.
+98. [ ] Start Menu shortcuts - success: Yoink Server, Stop Yoink Server, Yoink folder, and Uninstall Yoink entries work.
+99. [ ] Auto-start on Windows login - success: server starts hidden after sign-in and popup is green within 30 seconds.
+100. [ ] Uninstall - success: files, Start Menu shortcuts, Run key, and helper process are removed/cleared cleanly.
+
+## 12. Pre-launch packaging gates
+
+101. [ ] `USE_MOCK_API` / mock mode is off for production extension - success: popup talks to real helper, not fixtures.
+102. [ ] `INSTALLER_PUBLISHED` is flipped only after GitHub release asset exists - success: setup download URL resolves to `Yoink-Setup-2.0.0.exe`.
+103. [ ] Manifest version and installer version are aligned - success: Chrome Web Store package, installer, and `server.py VERSION` match launch plan.
+104. [ ] Direct-download hashes are locked - success: Python, ffmpeg, and get-pip hashes in `build.ps1` are non-empty and verified during build.
+105. [ ] Build installer from clean cache - success: `.\build.ps1 -Clean` outputs `build\Yoink-Setup-2.0.0.exe` and hash checks pass.
+106. [ ] Clean Windows VM install - success: unsigned SmartScreen path is understandable, installer runs without admin, helper starts hidden.
+107. [ ] Chrome Web Store package uses production domain/copy - success: footer, setup, README, store listing, and landing links point at `ryanbiddy.com/yoink` or the chosen canonical URL.
+108. [ ] Final docs pass - success: README, security, build-installer, v2 docs, and store listing no longer describe pre-Sprint-7 behavior.

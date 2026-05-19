@@ -785,7 +785,7 @@ Error responses:
 
 ### GET /recent
 
-Return the recent-yoinks compatibility list used by older popup surfaces. The response shape is unchanged from v1; Sprint 15's SQLite index powers newer recent/search/MCP library surfaces and the same on-disk corpus folders remain the source of truth for compatibility clients.
+Return the recent-yoinks list used by the popup. Sprint 15 moved this read path to `index.db`; Sprint 18 keeps the behavior compatible while enriching rows for popup health/entity/thumbnail surfaces. Soft-deleted yoinks are excluded.
 
 Auth: `X-Yoink-Token` required.
 
@@ -800,7 +800,22 @@ Success response: HTTP 200
     {
       "title": "A practical guide to creator research",
       "topic": "Creator Research",
-      "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research"
+      "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research",
+      "video_id": "abc123DEF45",
+      "channel": "Example Channel",
+      "yoinked_at": "2026-05-18T14:30:22",
+      "hook_type": "curiosity_gap",
+      "hook_type_confidence": 4,
+      "entity_count": 8,
+      "top_entities": ["Claude", "Anthropic", "MCP"],
+      "thumbnail_path": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research\\thumbnail.jpg",
+      "health": {
+        "transcript": "ok",
+        "screenshots": "ok",
+        "comments": "ok",
+        "hook": "ok",
+        "comment_intelligence": "skipped"
+      }
     }
   ]
 }
@@ -808,8 +823,178 @@ Success response: HTTP 200
 
 Notes:
 
-- Behavior remains intentionally compatibility-focused: clients should not depend on extra fields here.
-- Newer agent/library workflows should prefer MCP `list_recent_yoinks` or `search_yoinks`, which are backed by `index.db`.
+- Rows are newest-first and come from `index.db`.
+- The popup may use extra fields when present, but older clients can still read `title`, `topic`, and `folder`.
+- Soft-deleted rows (`deleted_at IS NOT NULL`) are hidden.
+
+### GET /memory/search
+
+Search and filter the local Yoink library for the standalone Yoink Memory page.
+
+Auth: `X-Yoink-Token` required.
+
+Rate limit: 60 calls/minute per helper process.
+
+Request body: none.
+
+Query parameters:
+
+| Field | Type | Required | Notes |
+|---|---:|---:|---|
+| `q` | string | no | Full-text query. Sanitized before FTS5 `MATCH`; unusable queries return zero results instead of crashing. |
+| `channel` | string | no | Exact channel-name filter. |
+| `topic` | string | no | Exact topic-folder filter. |
+| `hook_type` | string | no | One of the 9 Hook Type categories. |
+| `date_from` | string | no | Inclusive lower bound, `YYYY-MM-DD`. |
+| `date_to` | string | no | Inclusive upper bound, `YYYY-MM-DD`. Internally implemented as `< next day`. |
+| `limit` | integer | no | Defaults to 50. Clamped to 1-200. |
+| `offset` | integer | no | Defaults to 0. Must be 0 or greater. |
+
+Filters combine with AND logic. With `q`, rows are ranked by FTS5 `bm25`; without `q`, rows sort by `yoinked_at DESC`.
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "total": 137,
+  "limit": 50,
+  "offset": 0,
+  "results": [
+    {
+      "title": "A practical guide to creator research",
+      "topic": "Creator Research",
+      "folder": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research",
+      "video_id": "abc123DEF45",
+      "channel": "Example Channel",
+      "yoinked_at": "2026-05-18T14:30:22",
+      "hook_type": "curiosity_gap",
+      "hook_type_confidence": 4,
+      "health": {
+        "transcript": "ok",
+        "screenshots": "ok",
+        "comments": "ok",
+        "hook": "ok",
+        "comment_intelligence": "skipped"
+      },
+      "entity_count": 8,
+      "top_entities": ["Claude", "Anthropic", "MCP"],
+      "thumbnail_path": "C:\\Users\\Ryan\\Desktop\\Yoink\\Creator Research\\a-practical-guide-to-creator-research\\thumbnail.jpg"
+    }
+  ]
+}
+```
+
+Behavior:
+
+- Results use the same enriched row shape as `/recent`.
+- Soft-deleted rows are filtered out with `deleted_at IS NULL`.
+- `thumbnail_path` is an absolute local path. The extension loads it through token-gated `GET /file?path=<absolute-path>`.
+- The endpoint does not return corpus markdown; use MCP `get_yoink_corpus` or open the folder for the full corpus.
+
+Error responses:
+
+| HTTP status | Error string | Meaning |
+|---:|---|---|
+| 400 | `hook_type invalid` | `hook_type` is not one of the allowed categories. |
+| 400 | `date_from must be YYYY-MM-DD` | Date lower bound is malformed. |
+| 400 | `date_to must be YYYY-MM-DD` | Date upper bound is malformed. |
+| 400 | `limit/offset must be integers` | Pagination values could not be parsed. |
+| 403 | `missing or invalid token` | `X-Yoink-Token` missing or stale. |
+| 429 | `too many requests` | More than 60 memory searches/minute. |
+| 500 | `search failed` | SQLite/index failure. |
+
+### POST /memory/delete
+
+Soft-delete a yoink from Yoink Memory.
+
+Auth: `X-Yoink-Token` required.
+
+Request body:
+
+```json
+{ "video_id": "abc123DEF45" }
+```
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "restored_at": null,
+  "deleted_at": "2026-05-18T14:30:22"
+}
+```
+
+Side effects:
+
+- Sets `yoinks.deleted_at`.
+- Moves the yoink folder to `_yoink-trash/<topic>/<slug>__deleted-<timestamp>/` under the Yoink output root.
+- Normal read paths hide the row immediately.
+- If the folder move fails, the helper rolls back the index row by clearing `deleted_at`.
+
+Error responses:
+
+| HTTP status | Error string | Meaning |
+|---:|---|---|
+| 400 | `video_id required` | Missing or empty video ID. |
+| 403 | `missing or invalid token` | `X-Yoink-Token` missing or stale. |
+| 404 | `yoink not found` | No indexed yoink exists for that video ID. |
+| 409 | `already deleted` | The row already has `deleted_at`. |
+| 409 | `yoink folder missing on disk` | The index row exists, but its folder is missing. |
+| 500 | `could not move folder to trash` | Windows/filesystem move failed; the index row is rolled back. |
+
+### POST /memory/restore
+
+Restore a soft-deleted yoink while it is still inside `_yoink-trash/`.
+
+Auth: `X-Yoink-Token` required.
+
+Request body:
+
+```json
+{ "video_id": "abc123DEF45" }
+```
+
+Success response: HTTP 200
+
+```json
+{
+  "ok": true,
+  "restored_at": "2026-05-18T14:35:10"
+}
+```
+
+Side effects:
+
+- Moves the folder back from `_yoink-trash/` to its original topic/slug location.
+- Clears `yoinks.deleted_at`.
+- Makes the row visible to `/recent`, `/memory/search`, MCP search, and other normal read paths again.
+
+Error responses:
+
+| HTTP status | Error string | Meaning |
+|---:|---|---|
+| 400 | `video_id required` | Missing or empty video ID. |
+| 403 | `missing or invalid token` | `X-Yoink-Token` missing or stale. |
+| 404 | `yoink not found` | No indexed yoink exists for that video ID. |
+| 409 | `yoink is not deleted` | The row has no `deleted_at` value. |
+| 409 | `trash folder not found` | The trash folder no longer exists. |
+| 409 | `original location is occupied` | Restore would overwrite an existing folder. |
+| 500 | `could not restore folder` | Windows/filesystem move failed. |
+
+### Background trash auto-purge
+
+The helper starts a daemon trash-purge thread during startup. It runs one purge pass immediately, then repeats every 24 hours.
+
+Rows older than the 30-day retention window are hard-deleted:
+
+- The matching `_yoink-trash/` folder is removed.
+- The `yoinks` row is deleted.
+- Foreign-key cascades remove related `citations`, `entity_mentions`, and `taxonomy_corrections` rows.
+- The standalone `yoinks_fts` row is removed by `index.delete_yoink(video_id)`.
+
+There is no public "purge now" endpoint in Sprint 18.
 
 ### GET /taxonomy
 
@@ -1350,6 +1535,8 @@ The following v1 endpoints keep their current shapes and semantics:
 No v2 playlist work may break existing single-video, session, health, token, recent-yoinks, or open-folder clients.
 
 Sprint 15 adds `GET /index/backfill-status` and `POST /index/backfill-cancel` without changing the existing v1 endpoint shapes.
+
+Sprint 18 adds `GET /memory/search`, `POST /memory/delete`, and `POST /memory/restore` for the standalone Yoink Memory page. These are additive and do not change the v1 extraction/session contracts.
 
 ## Client-side helpers needed from Claude Code
 

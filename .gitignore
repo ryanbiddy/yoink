@@ -23,6 +23,7 @@ Yoink/
 # explicit-output-dir refactor.
 _sessions/
 _all-yoinks-index.md
+_yoink-trash/
 /Yoink-Output/
 
 # Topic folders (one per entry in topics.json + the Uncategorized

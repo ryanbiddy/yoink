@@ -228,6 +228,21 @@ Tier-1 small wins first (Codex's review reordering: low-risk, high-leverage). La
 - **Rationale:** Allow users to pick from the full set of extracted screenshots instead of just the default embedded ones. Requires backend API changes to serve thumbnail grid data.
 - **Trigger:** v2.1 cycle
 
+### Memory page bulk operations
+- **Destination:** v2.1
+- **Rationale:** Sprint 18 ships the single-row Memory page actions. Power users will quickly want multi-select delete, bulk re-yoink, and bulk export once the gallery becomes the main library surface.
+- **Trigger:** Traction signal from users managing dozens or hundreds of yoinks.
+
+### Saved filter views
+- **Destination:** v2.1
+- **Rationale:** Memory filters are useful, but repeated workflows need named/pinned views such as "My research," "Tech talks 2026," or "Competitor hooks." Saved views turn the Memory page into a reusable operating surface.
+- **Trigger:** Post-launch feedback that users keep re-entering the same filter combinations.
+
+### Memory page timeline visualization
+- **Destination:** v2.5
+- **Rationale:** The strategy brief's timeline idea fits naturally on top of the Memory page and `index.db`: yoink frequency over time, topics over time, Hook Type mix over time. It should wait until the basic gallery proves useful.
+- **Trigger:** v2.5 cycle or evidence that users want library analytics, not just library retrieval.
+
 ---
 
 ## v2.5 candidates (build if v2 hits traction signal)
