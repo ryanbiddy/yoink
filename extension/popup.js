@@ -1067,7 +1067,15 @@ document.getElementById("send-chatgpt").addEventListener("click", () => {
 });
 
 // ---- View all yoinks ------------------------------------------------------
-// Opens _all-yoinks-index.md in the user's default markdown viewer.
+const openIndexLink = document.getElementById("open-index");
+if (openIndexLink) {
+  openIndexLink.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    chrome.tabs.create({ url: chrome.runtime.getURL("yoink-memory.html") });
+  });
+}
+// Legacy fallback below opens _all-yoinks-index.md if the Memory hook fails.
 document.getElementById("open-index").addEventListener("click", async (ev) => {
   ev.preventDefault();
   try {
