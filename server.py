@@ -912,11 +912,16 @@ def _index_yoink(folder: Path, sidecar: dict, corpus_path: Path | None,
 
 
 def _iter_corpus_folders():
-    """Yield (folder, corpus_path) for every yoink folder under DESKTOP_ROOT."""
+    """Yield (folder, corpus_path) for every live yoink folder under
+    DESKTOP_ROOT. Soft-deleted yoinks parked under _yoink-trash/ are
+    skipped so the backfill never re-indexes a trashed video."""
     if not DESKTOP_ROOT.exists():
         return
+    trash = _trash_root()
     for folder in DESKTOP_ROOT.rglob("*"):
         if not folder.is_dir():
+            continue
+        if folder == trash or trash in folder.parents:
             continue
         corpus = _resolve_corpus_path(folder)
         if corpus is not None:

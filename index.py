@@ -334,7 +334,7 @@ class Index:
                "bm25(yoinks_fts) AS _score "
                "FROM yoinks_fts f "
                "JOIN yoinks y ON y.video_id = f.video_id "
-               "WHERE yoinks_fts MATCH ? ")
+               "WHERE yoinks_fts MATCH ? AND y.deleted_at IS NULL ")
         params: list = [match]
         if channel:
             sql += "AND y.channel = ? "
@@ -354,10 +354,12 @@ class Index:
         return [dict(r) for r in rows]
 
     def list_recent(self, limit: int = 20) -> list[dict]:
-        """Most-recently-yoinked rows, newest first."""
+        """Most-recently-yoinked rows, newest first. Excludes soft-deleted
+        (deleted_at IS NOT NULL) rows."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM yoinks ORDER BY yoinked_at DESC LIMIT ?",
+                "SELECT * FROM yoinks WHERE deleted_at IS NULL "
+                "ORDER BY yoinked_at DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -857,7 +859,7 @@ class Index:
         Matches on the normalised name (case/punctuation-insensitive) across
         every type the name was tagged as, joining through to the yoink for
         its slug/title/channel. Each row carries a timestamped deep link.
-        Returns [] for an unknown entity."""
+        Soft-deleted yoinks are excluded. Returns [] for an unknown entity."""
         norm = normalize_entity_name(name)
         if not norm:
             return []
@@ -868,7 +870,7 @@ class Index:
             "FROM entity_mentions em "
             "JOIN entities e ON e.entity_id = em.entity_id "
             "JOIN yoinks   y ON y.video_id  = em.video_id "
-            "WHERE e.name_normalized = ? "
+            "WHERE e.name_normalized = ? AND y.deleted_at IS NULL "
             "ORDER BY em.mention_id DESC LIMIT ?"
         )
         with self._lock:
