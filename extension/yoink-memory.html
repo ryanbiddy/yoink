@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yoink Memory</title>
+  <link rel="stylesheet" href="yoink-memory.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Local corpus gallery</div>
+        <h1>Yoink Memory</h1>
+      </div>
+      <div id="count-label" class="count-label">Loading...</div>
+    </header>
+
+    <div id="offline-banner" class="banner hidden" role="status">
+      Yoink helper is offline. Start it from the system tray.
+    </div>
+
+    <section class="filters" aria-label="Memory filters">
+      <label>
+        <span>Search</span>
+        <input id="filter-search" type="search" placeholder="Search transcripts, titles, comments...">
+      </label>
+      <label>
+        <span>Channel</span>
+        <input id="filter-channel" type="text" placeholder="Any channel">
+      </label>
+      <label>
+        <span>Topic</span>
+        <input id="filter-topic" type="text" placeholder="Any topic">
+      </label>
+      <label>
+        <span>Hook type</span>
+        <select id="filter-hook">
+          <option value="">All hook types</option>
+          <option value="curiosity_gap">Curiosity Gap</option>
+          <option value="question">Question</option>
+          <option value="contrarian">Contrarian</option>
+          <option value="story_open">Story Open</option>
+          <option value="promise_list">Promise/List</option>
+          <option value="demo">Demo</option>
+          <option value="authority">Authority</option>
+          <option value="stakes">Stakes</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>
+        <span>Date from</span>
+        <input id="filter-date-from" type="date">
+      </label>
+      <label>
+        <span>Date to</span>
+        <input id="filter-date-to" type="date">
+      </label>
+      <div class="filter-actions">
+        <button id="clear-filters" class="ghost-button" type="button">Clear X</button>
+      </div>
+    </section>
+
+    <main id="results" class="results" aria-live="polite">
+      <div class="loading-row">Loading Yoink Memory...</div>
+    </main>
+
+    <nav class="pagination" aria-label="Memory pagination">
+      <button id="prev-page" class="ghost-button" type="button">Prev</button>
+      <span id="page-label">Page 1 of 1</span>
+      <button id="next-page" class="ghost-button" type="button">Next</button>
+    </nav>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script src="lib/extract.js"></script>
+  <script src="yoink-memory.js"></script>
+</body>
+</html>
