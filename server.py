@@ -206,6 +206,37 @@ def _check_taxonomy_correct_rate_limit() -> bool:
     return True
 
 
+# GET /memory/search rate limit (Sprint 18). Heavier than /recent because
+# it runs an FTS5 query; 60/min is generous for a human paging the memory
+# page and still caps a runaway client.
+_MEMORY_SEARCH_RATE_LIMIT = 60
+_MEMORY_SEARCH_RATE_WINDOW_SEC = 60.0
+_memory_search_request_times: list[float] = []
+_memory_search_rate_lock = threading.Lock()
+
+
+def _check_memory_search_rate_limit() -> bool:
+    now = time.monotonic()
+    with _memory_search_rate_lock:
+        cutoff = now - _MEMORY_SEARCH_RATE_WINDOW_SEC
+        kept = [t for t in _memory_search_request_times if t > cutoff]
+        if len(kept) >= _MEMORY_SEARCH_RATE_LIMIT:
+            _memory_search_request_times[:] = kept
+            return False
+        kept.append(now)
+        _memory_search_request_times[:] = kept
+    return True
+
+
+def _valid_iso_date(value: str) -> bool:
+    """True if value is a well-formed YYYY-MM-DD date."""
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 # ---- Settings (v2.1 BYO Anthropic key) ------------------------------------
 class CredentialStoreError(RuntimeError):
     """Raised when the OS credential store cannot read/write a saved key."""
@@ -4245,6 +4276,97 @@ def _playlist_worker(job_id: str):
         )
 
 
+def _enrich_yoink_row(idx, r: dict) -> dict | None:
+    """Shape one index `yoinks` row into the enriched result the popup's
+    /recent list and the memory page both consume: fresh health (Sprint
+    15), entity stats (Sprint 16), hook type + confidence (Sprint 17), and
+    the thumbnail path (Sprint 18). Returns None when the row lacks the
+    video_id / corpus_path needed to render it."""
+    video_id = r.get("video_id")
+    corpus_path = r.get("corpus_path") or ""
+    if not video_id or not corpus_path:
+        return None
+    folder = Path(corpus_path).parent
+    sidecar_path = r.get("sidecar_path") or ""
+
+    # Fresh health from the live sidecar -- the stored snapshot is captured
+    # at extraction time, before the AI workers finish, so re-computing from
+    # the current sidecar reflects the latest hook / CI / entity status.
+    health = None
+    if sidecar_path and Path(sidecar_path).exists():
+        try:
+            live = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+            health = compute_health(live)
+        except (OSError, json.JSONDecodeError):
+            pass
+    if health is None and r.get("health_score_json"):
+        try:
+            health = json.loads(r["health_score_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Hook Type + confidence (Sprint 17). Both live on the taxonomy row --
+    # the hook worker updates the taxonomy table, not yoinks, when
+    # classification completes, so taxonomy is the authoritative read.
+    hook_type = r.get("hook_type")
+    confidence = None
+    try:
+        with idx._lock:
+            tr = idx._conn.execute(
+                "SELECT hook_type, confidence FROM taxonomy WHERE video_id=?",
+                (video_id,),
+            ).fetchone()
+        if tr:
+            if tr["hook_type"]:
+                hook_type = tr["hook_type"]
+            if tr["confidence"] is not None:
+                confidence = int(tr["confidence"])
+    except Exception:
+        pass
+
+    # Entity stats (Sprint 16): distinct entity count + top 5 by mentions.
+    entity_count = 0
+    top_entities: list[str] = []
+    try:
+        with idx._lock:
+            ec = idx._conn.execute(
+                "SELECT COUNT(DISTINCT entity_id) AS c "
+                "FROM entity_mentions WHERE video_id=?", (video_id,),
+            ).fetchone()
+            if ec:
+                entity_count = int(ec["c"] or 0)
+            es = idx._conn.execute(
+                "SELECT e.name FROM entity_mentions em "
+                "JOIN entities e ON e.entity_id = em.entity_id "
+                "WHERE em.video_id = ? "
+                "GROUP BY em.entity_id ORDER BY COUNT(*) DESC LIMIT 5",
+                (video_id,),
+            ).fetchall()
+            top_entities = [row["name"] for row in es]
+    except Exception:
+        pass
+
+    # Thumbnail (Sprint 18): absolute path when thumbnail.jpg is on disk so
+    # the memory page can fetch it via the token-gated /file endpoint.
+    thumb = folder / "thumbnail.jpg"
+    thumbnail_path = str(thumb) if thumb.exists() else None
+
+    return {
+        "title": r.get("title") or "",
+        "topic": r.get("topic") or "",
+        "folder": str(folder),
+        "video_id": video_id,
+        "channel": r.get("channel"),
+        "yoinked_at": r.get("yoinked_at"),
+        "hook_type": hook_type,
+        "hook_type_confidence": confidence,
+        "health": health,
+        "entity_count": entity_count,
+        "top_entities": top_entities,
+        "thumbnail_path": thumbnail_path,
+    }
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -4468,6 +4590,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_taxonomy()
         if bare == "/taxonomy/corrections":
             return self._handle_taxonomy_corrections()
+        if bare == "/memory/search":
+            return self._handle_memory_search()
         log.info("GET %s -> 404", self.path)
         self._send_json(404, {"ok": False, "error": "not found"})
 
@@ -4691,105 +4815,67 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_recent(self):
         """Recent yoinks for the popup. Sprint 15.1 follow-up:
         replaces the disk-walk with an Index.list_recent read and enriches
-        each row with the index data (Sprint 15 health, Sprint 16 entity
-        counts, Sprint 17 hook confidence) the popup needs to render its
-        chips. Falls back to an empty list if the index is unavailable."""
+        each row via _enrich_yoink_row (the same helper the memory page
+        uses). Falls back to an empty list if the index is unavailable."""
         idx = _get_index()
         try:
             rows = idx.list_recent(limit=10)
         except Exception as e:
             log.warning("recent: index unavailable: %s", e)
             rows = []
-
-        results = []
-        for r in rows:
-            video_id = r.get("video_id")
-            sidecar_path = r.get("sidecar_path") or ""
-            corpus_path = r.get("corpus_path") or ""
-            if not video_id or not corpus_path:
-                continue
-            folder = str(Path(corpus_path).parent)
-
-            # Fresh health from the live sidecar — the stored snapshot is
-            # captured at extraction time, before the AI workers finish,
-            # so re-computing from the current sidecar reflects the latest
-            # hook / CI / entity status.
-            health = None
-            if sidecar_path and Path(sidecar_path).exists():
-                try:
-                    live = json.loads(
-                        Path(sidecar_path).read_text(encoding="utf-8"))
-                    health = compute_health(live)
-                except (OSError, json.JSONDecodeError):
-                    pass
-            if health is None and r.get("health_score_json"):
-                try:
-                    health = json.loads(r["health_score_json"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            # Hook Type + confidence (Sprint 17). Both live on the
-            # taxonomy row (the hook worker updates the taxonomy table,
-            # not the yoinks table, when classification completes).
-            # yoinks.hook_type can be stale-null for newly-yoinked videos
-            # whose hook worker has since finished, so taxonomy is the
-            # authoritative read.
-            hook_type = r.get("hook_type")
-            confidence = None
-            try:
-                with idx._lock:
-                    tr = idx._conn.execute(
-                        "SELECT hook_type, confidence FROM taxonomy "
-                        "WHERE video_id=?",
-                        (video_id,),
-                    ).fetchone()
-                if tr:
-                    if tr["hook_type"]:
-                        hook_type = tr["hook_type"]
-                    if tr["confidence"] is not None:
-                        confidence = int(tr["confidence"])
-            except Exception:
-                pass
-
-            # Entity stats (Sprint 16). Distinct entity count + top 5 by
-            # mention count for this video.
-            entity_count = 0
-            top_entities: list[str] = []
-            try:
-                with idx._lock:
-                    ec = idx._conn.execute(
-                        "SELECT COUNT(DISTINCT entity_id) AS c "
-                        "FROM entity_mentions WHERE video_id=?",
-                        (video_id,),
-                    ).fetchone()
-                    if ec:
-                        entity_count = int(ec["c"] or 0)
-                    es = idx._conn.execute(
-                        "SELECT e.name FROM entity_mentions em "
-                        "JOIN entities e ON e.entity_id = em.entity_id "
-                        "WHERE em.video_id = ? "
-                        "GROUP BY em.entity_id "
-                        "ORDER BY COUNT(*) DESC LIMIT 5",
-                        (video_id,),
-                    ).fetchall()
-                    top_entities = [row["name"] for row in es]
-            except Exception:
-                pass
-
-            results.append({
-                "title": r.get("title") or "",
-                "topic": r.get("topic") or "",
-                "folder": folder,
-                "video_id": video_id,
-                "channel": r.get("channel"),
-                "yoinked_at": r.get("yoinked_at"),
-                "hook_type": hook_type,
-                "hook_type_confidence": confidence,
-                "health": health,
-                "entity_count": entity_count,
-                "top_entities": top_entities,
-            })
+        results = [er for er in (_enrich_yoink_row(idx, r) for r in rows) if er]
         self._send_json(200, {"ok": True, "recent": results})
+
+    # ---- /memory/search ----
+    def _handle_memory_search(self):
+        """Filtered/paginated yoink search behind the memory page (B1).
+        Token-gated, rate-limited (heavier than /recent due to FTS)."""
+        if not _check_memory_search_rate_limit():
+            return self._send_json(429, {"ok": False, "error": "too many requests"})
+        qs = parse_qs(urlparse(self.path).query)
+
+        def _one(name: str) -> str | None:
+            value = (qs.get(name) or [""])[0].strip()
+            return value or None
+
+        hook_type = _one("hook_type")
+        if hook_type:
+            hook_type = hook_type.lower()
+            if hook_type not in HOOK_TYPES:
+                return self._send_json(
+                    400, {"ok": False, "error": "hook_type invalid"})
+        date_from = _one("date_from")
+        date_to = _one("date_to")
+        for label, value in (("date_from", date_from), ("date_to", date_to)):
+            if value and not _valid_iso_date(value):
+                return self._send_json(
+                    400, {"ok": False, "error": f"{label} must be YYYY-MM-DD"})
+        try:
+            limit = max(1, min(200, int(_one("limit") or "50")))
+            offset = max(0, int(_one("offset") or "0"))
+        except (TypeError, ValueError):
+            return self._send_json(
+                400, {"ok": False, "error": "limit/offset must be integers"})
+
+        idx = _get_index()
+        try:
+            res = idx.search_yoinks_for_memory(
+                q=_one("q"), channel=_one("channel"), topic=_one("topic"),
+                hook_type=hook_type, date_from=date_from, date_to=date_to,
+                limit=limit, offset=offset,
+            )
+        except Exception as e:
+            log.warning("memory search: index error: %s", e)
+            return self._send_json(500, {"ok": False, "error": "search failed"})
+        results = [er for er in (_enrich_yoink_row(idx, r)
+                                 for r in res["results"]) if er]
+        self._send_json(200, {
+            "ok": True,
+            "total": res["total"],
+            "limit": limit,
+            "offset": offset,
+            "results": results,
+        })
 
     # ---- /open-folder?path=... ----
     # Pop Explorer at an arbitrary folder. Used by the "Recent yoinks" list
