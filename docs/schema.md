@@ -1,8 +1,8 @@
 # Yoink Library Index Schema
 
-Status: implemented through Sprint 16
+Status: implemented through Sprint 18
 Database: `%LOCALAPPDATA%\Yoink\index.db`
-Scope: SQLite library index, FTS5 search, job/taxonomy migration, citations, health scores, entity graph, and backfill.
+Scope: SQLite library index, FTS5 search, job/taxonomy migration, citations, health scores, entity graph, soft delete, and backfill.
 
 ## Overview
 
@@ -69,12 +69,14 @@ Primary metadata table for one saved single-video yoink.
 | `sidecar_path` | TEXT | required | Absolute path to the per-video JSON sidecar. |
 | `health_score_json` | TEXT | nullable | JSON-encoded health dict for popup/MCP health surfaces. |
 | `metadata_json` | TEXT | nullable | JSON snapshot of URL, duration, views, likes, and upload date. |
+| `deleted_at` | TEXT | nullable | Sprint 18 soft-delete timestamp. NULL means the yoink is visible. Non-NULL rows are hidden from normal read paths and are restorable from `_yoink-trash/` until purge. |
 
 Query behavior:
 
 - `video_id` is the durable identity. Re-yoinking the same video updates the row.
 - `slug` stays unique so UI and agent tools can resolve the saved folder.
 - `yoinked_at` backs newest-first recent-library queries.
+- All Memory-page reads filter `deleted_at IS NULL`; soft-deleted yoinks stay in the database until restored or hard-purged after the 30-day trash retention window.
 
 ### `yoinks_fts`
 
@@ -305,6 +307,50 @@ Query behavior:
 - Sprint 16 orders mentions by `entity_mentions.mention_id DESC`, which approximates newest indexed mentions first.
 - Lazy backfill: rows exist only for yoinks processed after Sprint 16 entity extraction lands.
 
+### Sprint 18 - Memory soft delete (migration 0004)
+
+Migration `0004_memory_indexes.sql` adds the Memory-page soft-delete field:
+
+```sql
+ALTER TABLE yoinks ADD COLUMN deleted_at TEXT;
+CREATE INDEX IF NOT EXISTS idx_yoinks_deleted_at ON yoinks(deleted_at);
+```
+
+`deleted_at` is a nullable TEXT timestamp:
+
+- `NULL`: the yoink is active and appears in `/recent`, `/memory/search`, MCP library search, and normal Memory-page reads.
+- Non-NULL: the yoink has been soft-deleted. Normal read paths filter it out with `deleted_at IS NULL`.
+
+The Sprint 18 backend intentionally does not add compound Memory-page indexes. The backend branch tested the proposed `(yoinked_at DESC, <filter>)` indexes with `EXPLAIN QUERY PLAN`; SQLite already used the existing single-column indexes for channel, topic, hook type, and date filters, and the proposed compound indexes were not selected by the planner. Only `idx_yoinks_deleted_at` ships in migration 0004.
+
+#### `_yoink-trash/` folder
+
+Soft-deleted folders move under the Yoink output root:
+
+```text
+<Yoink output root>\_yoink-trash\<topic-folder>\<slug>__deleted-<timestamp>\
+```
+
+The topic folder is copied from the original `corpus_path` parent. The timestamp comes from `deleted_at`, with colons removed so the folder name is valid on Windows.
+
+Example:
+
+```text
+C:\Users\Ryan\Desktop\Yoink\_yoink-trash\AI and ML\the-new-code__deleted-2026-05-18T143022\
+```
+
+Restore behavior:
+
+- `POST /memory/restore` recomputes the trash path from the deleted row, moves the folder back to the original topic/slug path, and clears `deleted_at`.
+- Restore fails if the trash folder is missing or the original location is already occupied.
+
+Purge behavior:
+
+- A daemon trash-purge thread runs once at helper startup, then every 24 hours.
+- Rows whose `deleted_at` is older than 30 days are hard-deleted.
+- The helper removes the trash folder and calls `index.delete_yoink(video_id)`.
+- Foreign-key cascades clear `citations`, `entity_mentions`, and `taxonomy_corrections`; the helper also removes the standalone `yoinks_fts` row.
+
 ## Indexes
 
 | Index | Table | Supports |
@@ -312,6 +358,7 @@ Query behavior:
 | `idx_yoinks_yoinked_at` | `yoinks(yoinked_at DESC)` | Recent library queries. |
 | `idx_yoinks_channel` | `yoinks(channel)` | Channel-filtered search or future channel views. |
 | `idx_yoinks_hook_type` | `yoinks(hook_type)` | Hook Type filters and future taxonomy views. |
+| `idx_yoinks_deleted_at` | `yoinks(deleted_at)` | Memory soft-delete filtering and trash purge candidate lookup. |
 | `idx_jobs_updated_at` | `jobs(updated_at DESC)` | Newest-first `/jobs` recovery and popup state. |
 | `idx_jobs_status` | `jobs(status)` | Terminal-job retention and future status filters. |
 | `idx_taxonomy_hook_type` | `taxonomy(hook_type)` | Hook Type taxonomy filters. |
