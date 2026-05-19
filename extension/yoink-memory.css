@@ -173,7 +173,18 @@ h1 {
 .memory-row:hover {
   background: #202024;
   border-color: #44444a;
-  transform: translateY(-1px);
+  /* transform removed: it created a new stacking context that trapped
+     the action-menu dropdown behind later rows. Use a shadow instead
+     so we keep the visual lift without the stacking context. */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Lift the whole row above siblings while its menu is open, so the
+   dropdown can extend below without being clipped by the next row's
+   stacking context. */
+.memory-row:focus-within {
+  z-index: 100;
+  position: relative;
 }
 
 .thumb {
@@ -306,7 +317,7 @@ h1 {
   position: absolute;
   right: 0;
   top: 38px;
-  z-index: 10;
+  z-index: 1000;
   min-width: 164px;
   padding: 6px;
   border: 1px solid var(--border);
